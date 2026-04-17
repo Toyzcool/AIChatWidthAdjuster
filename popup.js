@@ -11,7 +11,6 @@ const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 const tabBtns = document.querySelectorAll('.tab-btn');
 const panels = document.querySelectorAll('[data-panel]');
 const wrapToggle = document.getElementById('wrapToggle');
-const expandInputToggle = document.getElementById('expandInputToggle');
 
 // Per-site control state (slider, display, presets, tween id).
 const controls = {};
@@ -102,10 +101,6 @@ wrapToggle.addEventListener('change', () => {
     chrome.storage.local.set({ codeAutoWrap: wrapToggle.checked });
 });
 
-expandInputToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ expandInput: expandInputToggle.checked });
-});
-
 // Detect active tab's site, then load all widths + wrap preference.
 function detectActiveSite(cb) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -117,12 +112,14 @@ function detectActiveSite(cb) {
     });
 }
 
-const storageKeys = Object.values(SITES).map(s => s.storageKey).concat('codeAutoWrap', 'expandInput');
+const storageKeys = Object.values(SITES).map(s => s.storageKey).concat('codeAutoWrap');
 chrome.storage.local.get(storageKeys, (result) => {
     for (const [id, { storageKey, defaultWidth }] of Object.entries(SITES)) {
         setWidthUI(id, result[storageKey] ?? defaultWidth);
     }
     wrapToggle.checked = !!result.codeAutoWrap;
-    expandInputToggle.checked = !!result.expandInput;
     detectActiveSite(showPanel);
 });
+
+// Clean up storage from the removed Expand Input Box toggle (v2.3).
+chrome.storage.local.remove('expandInput');

@@ -10,9 +10,7 @@ const SITES = {
         match: (host) => host.includes('gemini.google.com'),
         storageKey: 'geminiWidth',
         defaultWidth: 1200,
-        // Gemini's CSS doesn't currently target the input composer, so
-        // expandInput is accepted for API symmetry but unused.
-        css: (width, _expandInput) => `
+        css: (width) => `
             .conversation-container,
             main > div:has(.conversation-container),
             chat-window-content,
@@ -78,21 +76,13 @@ const SITES = {
         match: (host) => host.includes('claude.ai'),
         storageKey: 'claudeWidth',
         defaultWidth: 1000,
-        css: (width, expandInput) => `
+        css: (width) => `
             /* Claude layout is constrained by Tailwind's max-w-3xl (768px).
-               Override within the scroll (messages) area. */
+               Only widen messages — the composer stays at its original width. */
             [data-autoscroll-container="true"] .max-w-3xl {
                 max-width: ${width}px !important;
                 transition: max-width 0.25s ease;
             }
-            ${expandInput ? `
-            /* Widen composer to match message column. */
-            [data-chat-input-container="true"],
-            [data-chat-input-container="true"] .max-w-3xl {
-                max-width: ${width}px !important;
-                transition: max-width 0.25s ease;
-            }
-            ` : ''}
             [data-autoscroll-container="true"] .font-claude-response,
             [data-autoscroll-container="true"] .standard-markdown {
                 max-width: 100% !important;
@@ -110,11 +100,11 @@ const SITES = {
         match: (host) => host.includes('chatgpt.com') || host.includes('chat.openai.com'),
         storageKey: 'chatgptWidth',
         defaultWidth: 1000,
-        css: (width, expandInput) => `
-            /* ChatGPT uses --thread-content-max-width CSS variable for both
-               message column and composer. Scoping to <section> targets only
-               message turns; dropping the scope also widens the composer. */
-            main ${expandInput ? '' : 'section '}[class*="--thread-content-max-width"] {
+        css: (width) => `
+            /* ChatGPT drives both column and composer through --thread-content-max-width.
+               Scoping to <section> restricts the override to message turns, keeping
+               the composer at its native width. */
+            main section [class*="--thread-content-max-width"] {
                 --thread-content-max-width: ${width}px !important;
                 transition: max-width 0.25s ease;
             }
@@ -161,35 +151,21 @@ function upsertStyle(id, css) {
 
 const site = detectSite();
 if (site) {
-    let currentWidth = site.defaultWidth;
-    let currentExpandInput = false;
-
-    const renderWidth = () => {
-        upsertStyle(STYLE_WIDTH_ID, site.css(currentWidth, currentExpandInput));
+    const applyWidth = (width) => {
+        upsertStyle(STYLE_WIDTH_ID, site.css(Number(width) || site.defaultWidth));
     };
     const applyCodeWrap = (isEnabled) => {
         upsertStyle(STYLE_WRAP_ID, isEnabled ? CODE_WRAP_CSS : null);
     };
 
-    chrome.storage.local.get([site.storageKey, 'codeAutoWrap', 'expandInput'], (result) => {
-        currentWidth = Number(result[site.storageKey]) || site.defaultWidth;
-        currentExpandInput = !!result.expandInput;
-        renderWidth();
+    chrome.storage.local.get([site.storageKey, 'codeAutoWrap'], (result) => {
+        applyWidth(result[site.storageKey] ?? site.defaultWidth);
         applyCodeWrap(!!result.codeAutoWrap);
     });
 
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
-        let widthDirty = false;
-        if (changes[site.storageKey]) {
-            currentWidth = Number(changes[site.storageKey].newValue) || site.defaultWidth;
-            widthDirty = true;
-        }
-        if (changes.expandInput) {
-            currentExpandInput = !!changes.expandInput.newValue;
-            widthDirty = true;
-        }
-        if (widthDirty) renderWidth();
+        if (changes[site.storageKey]) applyWidth(changes[site.storageKey].newValue);
         if (changes.codeAutoWrap) applyCodeWrap(!!changes.codeAutoWrap.newValue);
     });
 }
