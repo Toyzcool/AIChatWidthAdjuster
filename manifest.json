@@ -1,15 +1,17 @@
 {
   "manifest_version": 3,
   "name": "AI Chat Width Adjuster",
-  "version": "2.1",
-  "description": "Adjust chat width on Gemini and Claude. Fixes tables and supports code auto-wrap.",
+  "version": "2.2",
+  "description": "Adjust chat width on Gemini, Claude, and ChatGPT. Fixes tables and supports code auto-wrap.",
   "permissions": [
     "storage",
     "tabs"
   ],
   "host_permissions": [
     "*://gemini.google.com/*",
-    "*://claude.ai/*"
+    "*://claude.ai/*",
+    "*://chatgpt.com/*",
+    "*://chat.openai.com/*"
   ],
   "icons": {
     "16": "icon.png",

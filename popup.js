@@ -1,7 +1,8 @@
 // Per-site config: storage key, default width, and host matcher for auto-detect.
 const SITES = {
-    gemini: { storageKey: 'geminiWidth', defaultWidth: 1200, host: 'gemini.google.com' },
-    claude: { storageKey: 'claudeWidth', defaultWidth: 1000, host: 'claude.ai' },
+    gemini:  { storageKey: 'geminiWidth',  defaultWidth: 1200, hosts: ['gemini.google.com'] },
+    claude:  { storageKey: 'claudeWidth',  defaultWidth: 1000, hosts: ['claude.ai'] },
+    chatgpt: { storageKey: 'chatgptWidth', defaultWidth: 1000, hosts: ['chatgpt.com', 'chat.openai.com'] },
 };
 
 const TWEEN_DURATION = 320; // ms
@@ -104,8 +105,8 @@ wrapToggle.addEventListener('change', () => {
 function detectActiveSite(cb) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const url = tabs[0]?.url ?? '';
-        for (const [id, { host }] of Object.entries(SITES)) {
-            if (url.includes(host)) return cb(id);
+        for (const [id, { hosts }] of Object.entries(SITES)) {
+            if (hosts.some(h => url.includes(h))) return cb(id);
         }
         cb('gemini'); // fallback
     });

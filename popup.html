@@ -293,12 +293,13 @@
 <body>
   <div class="header">
     <h1>AI Chat Width</h1>
-    <span class="version">2.1</span>
+    <span class="version">2.2</span>
   </div>
 
   <div class="site-tabs" role="tablist">
     <button class="tab-btn active" data-site="gemini" role="tab">Gemini</button>
     <button class="tab-btn" data-site="claude" role="tab">Claude</button>
+    <button class="tab-btn" data-site="chatgpt" role="tab">ChatGPT</button>
   </div>
 
   <!-- Gemini panel -->
@@ -324,6 +325,21 @@
     </div>
     <input type="range" data-slider="claude" min="700" max="2200" step="50" value="1000">
     <div class="presets" data-presets="claude">
+      <button class="preset-btn" data-width="900">900</button>
+      <button class="preset-btn active" data-width="1000">1000</button>
+      <button class="preset-btn" data-width="1200">1200</button>
+      <button class="preset-btn" data-width="1500">1500</button>
+    </div>
+  </div>
+
+  <!-- ChatGPT panel -->
+  <div class="card" data-panel="chatgpt" hidden>
+    <div class="row">
+      <span class="label-title">Chat Width</span>
+      <span class="value-display" data-value="chatgpt">1000 px</span>
+    </div>
+    <input type="range" data-slider="chatgpt" min="700" max="2200" step="50" value="1000">
+    <div class="presets" data-presets="chatgpt">
       <button class="preset-btn" data-width="900">900</button>
       <button class="preset-btn active" data-width="1000">1000</button>
       <button class="preset-btn" data-width="1200">1200</button>

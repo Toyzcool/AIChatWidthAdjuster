@@ -99,11 +99,36 @@ const SITES = {
             }
         `,
     },
+
+    chatgpt: {
+        match: (host) => host.includes('chatgpt.com') || host.includes('chat.openai.com'),
+        storageKey: 'chatgptWidth',
+        defaultWidth: 1000,
+        css: (width) => `
+            /* ChatGPT drives both message column and composer width through the
+               CSS variable --thread-content-max-width (default 40rem, 48rem on lg).
+               Overriding the variable on every element that defines it widens
+               messages and input together. */
+            main [class*="--thread-content-max-width"] {
+                --thread-content-max-width: ${width}px !important;
+                transition: max-width 0.25s ease;
+            }
+            /* Let markdown body and tables fill the widened column. */
+            main .markdown {
+                max-width: 100% !important;
+            }
+            main .markdown table {
+                width: 100% !important;
+                max-width: none !important;
+                table-layout: auto !important;
+            }
+        `,
+    },
 };
 
 // Code wrap CSS is site-agnostic — selectors target generic Markdown code blocks.
 const CODE_WRAP_CSS = `
-    pre, code, .code-block, pre > code, .markdown pre, .font-claude-response pre {
+    pre, code, .code-block, pre > code, .markdown pre, .font-claude-response pre, .prose pre {
         white-space: pre-wrap !important;
         word-wrap: break-word !important;
         word-break: break-word !important;
