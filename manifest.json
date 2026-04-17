@@ -26,7 +26,9 @@
     {
       "matches": [
         "*://gemini.google.com/*",
-        "*://claude.ai/*"
+        "*://claude.ai/*",
+        "*://chatgpt.com/*",
+        "*://chat.openai.com/*"
       ],
       "js": [
         "content.js"
