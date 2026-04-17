@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gemini Width Adjuster</title>
+  <title>AI Chat Width Adjuster</title>
   <style>
     /* Apple-inspired design system. Semantic colors mirror iOS / macOS system palette. */
     :root {
@@ -16,15 +16,15 @@
       --label-secondary: rgba(60, 60, 67, 0.68);
       --label-tertiary: rgba(60, 60, 67, 0.45);
 
-      --bg: #F2F2F7;         /* systemGroupedBackground */
-      --surface: #FFFFFF;    /* secondarySystemGroupedBackground */
-      --surface-elevated: rgba(255, 255, 255, 0.72);
+      --bg: #F2F2F7;
+      --surface: #FFFFFF;
       --separator: rgba(60, 60, 67, 0.12);
       --fill-tertiary: rgba(118, 118, 128, 0.12);
       --fill-quaternary: rgba(116, 116, 128, 0.08);
 
       --track: rgba(120, 120, 128, 0.24);
       --thumb-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 3px 8px rgba(0, 0, 0, 0.15), 0 1px 1px rgba(0, 0, 0, 0.16);
+      --active-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 3px 8px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
 
       --radius-card: 14px;
       --radius-control: 9px;
@@ -42,12 +42,12 @@
 
         --bg: #000000;
         --surface: #1C1C1E;
-        --surface-elevated: rgba(44, 44, 46, 0.72);
         --separator: rgba(84, 84, 88, 0.45);
         --fill-tertiary: rgba(118, 118, 128, 0.24);
         --fill-quaternary: rgba(118, 118, 128, 0.18);
 
         --track: rgba(120, 120, 128, 0.32);
+        --active-shadow: none;
       }
     }
 
@@ -73,7 +73,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 2px 4px 14px;
+      padding: 2px 4px 12px;
     }
 
     .header h1 {
@@ -81,7 +81,6 @@
       font-weight: 600;
       margin: 0;
       letter-spacing: -0.02em;
-      color: var(--label);
     }
 
     .version {
@@ -91,7 +90,43 @@
       background: var(--fill-tertiary);
       padding: 2px 8px;
       border-radius: var(--radius-pill);
-      letter-spacing: 0;
+    }
+
+    /* Site tabs — segmented control */
+    .site-tabs {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      gap: 2px;
+      padding: 2px;
+      background: var(--fill-quaternary);
+      border-radius: var(--radius-control);
+      margin-bottom: 12px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--label);
+      padding: 7px 0;
+      font-size: 13px;
+      font-weight: 500;
+      font-family: inherit;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.08s ease;
+      letter-spacing: -0.01em;
+    }
+
+    .tab-btn:hover:not(.active) { background: var(--fill-tertiary); }
+    .tab-btn:active { transform: scale(0.98); }
+
+    .tab-btn.active {
+      background: var(--surface);
+      box-shadow: var(--active-shadow);
+    }
+    @media (prefers-color-scheme: dark) {
+      .tab-btn.active { background: #636366; }
     }
 
     /* Card */
@@ -101,6 +136,8 @@
       padding: 14px 16px;
       margin-bottom: 10px;
     }
+
+    .card[hidden] { display: none; }
 
     .row {
       display: flex;
@@ -122,7 +159,7 @@
       letter-spacing: -0.01em;
     }
 
-    /* Slider (iOS/macOS style) */
+    /* Slider */
     input[type=range] {
       -webkit-appearance: none;
       appearance: none;
@@ -156,7 +193,7 @@
       transform: scale(1.08);
     }
 
-    /* Segmented control for presets */
+    /* Presets (segmented) */
     .presets {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -182,27 +219,18 @@
       letter-spacing: -0.01em;
     }
 
-    .preset-btn:hover:not(.active) {
-      background: var(--fill-tertiary);
-    }
-
-    .preset-btn:active {
-      transform: scale(0.97);
-    }
+    .preset-btn:hover:not(.active) { background: var(--fill-tertiary); }
+    .preset-btn:active { transform: scale(0.97); }
 
     .preset-btn.active {
       background: var(--surface);
-      color: var(--label);
-      box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 3px 8px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
+      box-shadow: var(--active-shadow);
     }
     @media (prefers-color-scheme: dark) {
-      .preset-btn.active {
-        background: #636366;
-        box-shadow: none;
-      }
+      .preset-btn.active { background: #636366; }
     }
 
-    /* Toggle (iOS style) */
+    /* Toggle */
     .toggle-row {
       display: flex;
       align-items: center;
@@ -214,7 +242,6 @@
     .toggle-label {
       font-size: 13px;
       font-weight: 500;
-      color: var(--label);
     }
 
     .toggle-switch {
@@ -247,7 +274,7 @@
     }
 
     input[type="checkbox"]:checked + .toggle-switch {
-      background: #34C759; /* systemGreen — iOS switch on-color */
+      background: #34C759;
     }
 
     input[type="checkbox"]:checked + .toggle-switch::after {
@@ -260,28 +287,47 @@
       text-align: center;
       font-size: 11px;
       color: var(--label-tertiary);
-      letter-spacing: 0;
     }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>Gemini Width Adjuster</h1>
-    <span class="version">2.0</span>
+    <h1>AI Chat Width</h1>
+    <span class="version">2.1</span>
   </div>
 
-  <div class="card">
+  <div class="site-tabs" role="tablist">
+    <button class="tab-btn active" data-site="gemini" role="tab">Gemini</button>
+    <button class="tab-btn" data-site="claude" role="tab">Claude</button>
+  </div>
+
+  <!-- Gemini panel -->
+  <div class="card" data-panel="gemini">
     <div class="row">
       <span class="label-title">Chat Width</span>
-      <span id="widthValue" class="value-display">1200 px</span>
+      <span class="value-display" data-value="gemini">1200 px</span>
     </div>
-    <input type="range" id="widthSlider" min="800" max="2500" step="50" value="1200">
-
-    <div class="presets" role="group" aria-label="Width presets">
+    <input type="range" data-slider="gemini" min="800" max="2500" step="50" value="1200">
+    <div class="presets" data-presets="gemini">
       <button class="preset-btn" data-width="1000">1000</button>
       <button class="preset-btn active" data-width="1200">1200</button>
       <button class="preset-btn" data-width="1500">1500</button>
       <button class="preset-btn" data-width="1800">1800</button>
+    </div>
+  </div>
+
+  <!-- Claude panel -->
+  <div class="card" data-panel="claude" hidden>
+    <div class="row">
+      <span class="label-title">Chat Width</span>
+      <span class="value-display" data-value="claude">1000 px</span>
+    </div>
+    <input type="range" data-slider="claude" min="700" max="2200" step="50" value="1000">
+    <div class="presets" data-presets="claude">
+      <button class="preset-btn" data-width="900">900</button>
+      <button class="preset-btn active" data-width="1000">1000</button>
+      <button class="preset-btn" data-width="1200">1200</button>
+      <button class="preset-btn" data-width="1500">1500</button>
     </div>
   </div>
 

@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Gemini Width Adjuster",
-  "version": "2.0",
-  "description": "Adjust Gemini chat width and fix table display issues.",
+  "name": "AI Chat Width Adjuster",
+  "version": "2.1",
+  "description": "Adjust chat width on Gemini and Claude. Fixes tables and supports code auto-wrap.",
   "permissions": [
-    "storage"
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
-    "*://gemini.google.com/*"
+    "*://gemini.google.com/*",
+    "*://claude.ai/*"
   ],
   "icons": {
     "16": "icon.png",
@@ -21,7 +23,8 @@
   "content_scripts": [
     {
       "matches": [
-        "*://gemini.google.com/*"
+        "*://gemini.google.com/*",
+        "*://claude.ai/*"
       ],
       "js": [
         "content.js"
