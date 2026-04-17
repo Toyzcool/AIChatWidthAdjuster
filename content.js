@@ -78,10 +78,18 @@ const SITES = {
         defaultWidth: 1000,
         css: (width) => `
             /* Claude layout is constrained by Tailwind's max-w-3xl (768px).
-               Only widen messages — the composer stays at its original width. */
+               Widen messages… */
             [data-autoscroll-container="true"] .max-w-3xl {
                 max-width: ${width}px !important;
                 transition: max-width 0.25s ease;
+            }
+            /* …but keep the composer pinned at its native width. It has w-full
+               and lives inside the widened column, so without this it would
+               stretch to fill. 48rem matches Tailwind's original max-w-3xl. */
+            [data-chat-input-container="true"] {
+                max-width: 48rem !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
             }
             [data-autoscroll-container="true"] .font-claude-response,
             [data-autoscroll-container="true"] .standard-markdown {
