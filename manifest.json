@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Width Adjuster",
+  "version": "2.0",
+  "description": "Adjust Gemini chat width and fix table display issues.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "*://gemini.google.com/*"
+  ],
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://gemini.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

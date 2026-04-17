@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini Width Adjuster</title>
+  <style>
+    /* Apple-inspired design system. Semantic colors mirror iOS / macOS system palette. */
+    :root {
+      color-scheme: light dark;
+
+      --system-blue: #007AFF;
+      --system-blue-pressed: #0066D6;
+
+      --label: rgba(0, 0, 0, 0.88);
+      --label-secondary: rgba(60, 60, 67, 0.68);
+      --label-tertiary: rgba(60, 60, 67, 0.45);
+
+      --bg: #F2F2F7;         /* systemGroupedBackground */
+      --surface: #FFFFFF;    /* secondarySystemGroupedBackground */
+      --surface-elevated: rgba(255, 255, 255, 0.72);
+      --separator: rgba(60, 60, 67, 0.12);
+      --fill-tertiary: rgba(118, 118, 128, 0.12);
+      --fill-quaternary: rgba(116, 116, 128, 0.08);
+
+      --track: rgba(120, 120, 128, 0.24);
+      --thumb-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 3px 8px rgba(0, 0, 0, 0.15), 0 1px 1px rgba(0, 0, 0, 0.16);
+
+      --radius-card: 14px;
+      --radius-control: 9px;
+      --radius-pill: 999px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --system-blue: #0A84FF;
+        --system-blue-pressed: #409CFF;
+
+        --label: rgba(255, 255, 255, 0.95);
+        --label-secondary: rgba(235, 235, 245, 0.62);
+        --label-tertiary: rgba(235, 235, 245, 0.32);
+
+        --bg: #000000;
+        --surface: #1C1C1E;
+        --surface-elevated: rgba(44, 44, 46, 0.72);
+        --separator: rgba(84, 84, 88, 0.45);
+        --fill-tertiary: rgba(118, 118, 128, 0.24);
+        --fill-quaternary: rgba(118, 118, 128, 0.18);
+
+        --track: rgba(120, 120, 128, 0.32);
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      width: 320px;
+      margin: 0;
+      padding: 18px 16px 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--label);
+      letter-spacing: -0.01em;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 2px 4px 14px;
+    }
+
+    .header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      margin: 0;
+      letter-spacing: -0.02em;
+      color: var(--label);
+    }
+
+    .version {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--label-secondary);
+      background: var(--fill-tertiary);
+      padding: 2px 8px;
+      border-radius: var(--radius-pill);
+      letter-spacing: 0;
+    }
+
+    /* Card */
+    .card {
+      background: var(--surface);
+      border-radius: var(--radius-card);
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .label-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--label);
+    }
+
+    .value-display {
+      font-size: 13px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      color: var(--system-blue);
+      letter-spacing: -0.01em;
+    }
+
+    /* Slider (iOS/macOS style) */
+    input[type=range] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      background: transparent;
+      margin: 10px 0 4px;
+      display: block;
+    }
+
+    input[type=range]:focus { outline: none; }
+
+    input[type=range]::-webkit-slider-runnable-track {
+      height: 4px;
+      background: var(--track);
+      border-radius: var(--radius-pill);
+    }
+
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 22px;
+      width: 22px;
+      border-radius: 50%;
+      background: #FFFFFF;
+      margin-top: -9px;
+      box-shadow: var(--thumb-shadow);
+      transition: transform 0.12s ease;
+    }
+
+    input[type=range]:active::-webkit-slider-thumb {
+      transform: scale(1.08);
+    }
+
+    /* Segmented control for presets */
+    .presets {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 2px;
+      margin-top: 14px;
+      padding: 2px;
+      background: var(--fill-quaternary);
+      border-radius: var(--radius-control);
+    }
+
+    .preset-btn {
+      background: transparent;
+      border: none;
+      color: var(--label);
+      padding: 6px 0;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      font-variant-numeric: tabular-nums;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.08s ease;
+      letter-spacing: -0.01em;
+    }
+
+    .preset-btn:hover:not(.active) {
+      background: var(--fill-tertiary);
+    }
+
+    .preset-btn:active {
+      transform: scale(0.97);
+    }
+
+    .preset-btn.active {
+      background: var(--surface);
+      color: var(--label);
+      box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 3px 8px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
+    }
+    @media (prefers-color-scheme: dark) {
+      .preset-btn.active {
+        background: #636366;
+        box-shadow: none;
+      }
+    }
+
+    /* Toggle (iOS style) */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .toggle-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--label);
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 51px;
+      height: 31px;
+      background: var(--track);
+      border-radius: var(--radius-pill);
+      transition: background 0.25s ease;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 27px;
+      height: 27px;
+      background: #FFFFFF;
+      border-radius: 50%;
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15), 0 3px 1px rgba(0, 0, 0, 0.06);
+    }
+
+    input[type="checkbox"] {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    input[type="checkbox"]:checked + .toggle-switch {
+      background: #34C759; /* systemGreen — iOS switch on-color */
+    }
+
+    input[type="checkbox"]:checked + .toggle-switch::after {
+      transform: translateX(20px);
+    }
+
+    /* Footer */
+    .footer {
+      margin-top: 6px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--label-tertiary);
+      letter-spacing: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Gemini Width Adjuster</h1>
+    <span class="version">2.0</span>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label-title">Chat Width</span>
+      <span id="widthValue" class="value-display">1200 px</span>
+    </div>
+    <input type="range" id="widthSlider" min="800" max="2500" step="50" value="1200">
+
+    <div class="presets" role="group" aria-label="Width presets">
+      <button class="preset-btn" data-width="1000">1000</button>
+      <button class="preset-btn active" data-width="1200">1200</button>
+      <button class="preset-btn" data-width="1500">1500</button>
+      <button class="preset-btn" data-width="1800">1800</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <label class="toggle-row">
+      <span class="toggle-label">Code Auto Wrap</span>
+      <input type="checkbox" id="wrapToggle">
+      <span class="toggle-switch"></span>
+    </label>
+  </div>
+
+  <div class="footer">Adjusts instantly. No refresh needed.</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
