@@ -10,7 +10,9 @@ const SITES = {
         match: (host) => host.includes('gemini.google.com'),
         storageKey: 'geminiWidth',
         defaultWidth: 1200,
-        css: (width) => `
+        // Gemini's CSS doesn't currently target the input composer, so
+        // expandInput is accepted for API symmetry but unused.
+        css: (width, _expandInput) => `
             .conversation-container,
             main > div:has(.conversation-container),
             chat-window-content,
@@ -76,22 +78,26 @@ const SITES = {
         match: (host) => host.includes('claude.ai'),
         storageKey: 'claudeWidth',
         defaultWidth: 1000,
-        css: (width) => `
+        css: (width, expandInput) => `
             /* Claude layout is constrained by Tailwind's max-w-3xl (768px).
-               Override within the scroll area and the sticky input container. */
-            [data-autoscroll-container="true"] .max-w-3xl,
+               Override within the scroll (messages) area. */
+            [data-autoscroll-container="true"] .max-w-3xl {
+                max-width: ${width}px !important;
+                transition: max-width 0.25s ease;
+            }
+            ${expandInput ? `
+            /* Widen composer to match message column. */
             [data-chat-input-container="true"],
             [data-chat-input-container="true"] .max-w-3xl {
                 max-width: ${width}px !important;
                 transition: max-width 0.25s ease;
             }
-            /* Ensure inner content fills the widened column. */
+            ` : ''}
             [data-autoscroll-container="true"] .font-claude-response,
             [data-autoscroll-container="true"] .standard-markdown {
                 max-width: 100% !important;
                 width: 100% !important;
             }
-            /* Tables should use all available width. */
             [data-autoscroll-container="true"] table {
                 width: 100% !important;
                 max-width: none !important;
@@ -104,16 +110,14 @@ const SITES = {
         match: (host) => host.includes('chatgpt.com') || host.includes('chat.openai.com'),
         storageKey: 'chatgptWidth',
         defaultWidth: 1000,
-        css: (width) => `
-            /* ChatGPT drives both message column and composer width through the
-               CSS variable --thread-content-max-width (default 40rem, 48rem on lg).
-               Overriding the variable on every element that defines it widens
-               messages and input together. */
-            main [class*="--thread-content-max-width"] {
+        css: (width, expandInput) => `
+            /* ChatGPT uses --thread-content-max-width CSS variable for both
+               message column and composer. Scoping to <section> targets only
+               message turns; dropping the scope also widens the composer. */
+            main ${expandInput ? '' : 'section '}[class*="--thread-content-max-width"] {
                 --thread-content-max-width: ${width}px !important;
                 transition: max-width 0.25s ease;
             }
-            /* Let markdown body and tables fill the widened column. */
             main .markdown {
                 max-width: 100% !important;
             }
@@ -157,21 +161,35 @@ function upsertStyle(id, css) {
 
 const site = detectSite();
 if (site) {
-    const applyWidth = (width) => {
-        upsertStyle(STYLE_WIDTH_ID, site.css(Number(width) || site.defaultWidth));
+    let currentWidth = site.defaultWidth;
+    let currentExpandInput = false;
+
+    const renderWidth = () => {
+        upsertStyle(STYLE_WIDTH_ID, site.css(currentWidth, currentExpandInput));
     };
     const applyCodeWrap = (isEnabled) => {
         upsertStyle(STYLE_WRAP_ID, isEnabled ? CODE_WRAP_CSS : null);
     };
 
-    chrome.storage.local.get([site.storageKey, 'codeAutoWrap'], (result) => {
-        applyWidth(result[site.storageKey] ?? site.defaultWidth);
+    chrome.storage.local.get([site.storageKey, 'codeAutoWrap', 'expandInput'], (result) => {
+        currentWidth = Number(result[site.storageKey]) || site.defaultWidth;
+        currentExpandInput = !!result.expandInput;
+        renderWidth();
         applyCodeWrap(!!result.codeAutoWrap);
     });
 
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
-        if (changes[site.storageKey]) applyWidth(changes[site.storageKey].newValue);
+        let widthDirty = false;
+        if (changes[site.storageKey]) {
+            currentWidth = Number(changes[site.storageKey].newValue) || site.defaultWidth;
+            widthDirty = true;
+        }
+        if (changes.expandInput) {
+            currentExpandInput = !!changes.expandInput.newValue;
+            widthDirty = true;
+        }
+        if (widthDirty) renderWidth();
         if (changes.codeAutoWrap) applyCodeWrap(!!changes.codeAutoWrap.newValue);
     });
 }
