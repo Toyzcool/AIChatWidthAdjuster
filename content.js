@@ -251,15 +251,34 @@ function htmlToMarkdown(root) {
     const out = [];
     const ctx = { listStack: [], inPre: false };
     walk(root, out, ctx);
-    return out.join('').replace(/\n{3,}/g, '\n\n').trim();
+    return out.join('')
+        // Collapse lines that only contain whitespace (HTML formatting text
+        // nodes between block elements create these).
+        .replace(/\n[ \t]+\n/g, '\n\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+function pushText(out, text, ctx) {
+    if (ctx.inPre) { out.push(text); return; }
+    let s = text.replace(/\s+/g, ' ');
+    // If we're at the start of a line (previous chunk ended with a newline),
+    // drop any leading space — it's HTML formatting whitespace, not content.
+    const last = out[out.length - 1];
+    if (!last || /\n[ \t]*$/.test(last)) s = s.replace(/^\s+/, '');
+    if (s) out.push(s);
 }
 
 function walk(node, out, ctx) {
     if (node.nodeType === Node.TEXT_NODE) {
-        out.push(ctx.inPre ? node.textContent : node.textContent.replace(/\s+/g, ' '));
+        pushText(out, node.textContent, ctx);
         return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    // Skip UI chrome embedded in the response DOM (thinking expander,
+    // copy/retry buttons, etc.). Their labels otherwise end up in the output.
+    if (shouldSkipElement(node)) return;
 
     const tag = node.tagName.toLowerCase();
     switch (tag) {
@@ -354,6 +373,18 @@ function walk(node, out, ctx) {
 
 function walkChildren(node, out, ctx) {
     for (const child of node.childNodes) walk(child, out, ctx);
+}
+
+function shouldSkipElement(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'button') return true;
+    const role = el.getAttribute('role');
+    if (role === 'button') return true;
+    if (el.getAttribute('aria-hidden') === 'true') return true;
+    // Common Claude thinking-expander patterns: a collapsible with label.
+    const testid = el.getAttribute('data-testid') || '';
+    if (/thinking|expandable|tool-?use/i.test(testid)) return true;
+    return false;
 }
 
 function extractLang(el) {
