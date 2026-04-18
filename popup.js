@@ -51,9 +51,12 @@ function tweenSliderTo(siteId, target) {
     cancelTween(siteId);
     const c = controls[siteId];
     const from = Number(c.slider.value);
-    // Commit storage immediately so the page begins its CSS transition in
-    // parallel with the popup's slider tween (avoids sequential choppiness).
-    chrome.storage.local.set({ [SITES[siteId].storageKey]: target });
+    // Commit storage with the animation duration so the page's CSS transition
+    // runs in parallel with the popup slider tween (avoids sequential choppiness).
+    chrome.storage.local.set({
+        [SITES[siteId].storageKey]: target,
+        widthAnimMs: TWEEN_DURATION,
+    });
     if (from === target) return;
     const start = performance.now();
     updatePresets(siteId, target);
@@ -86,7 +89,14 @@ for (const siteId of Object.keys(SITES)) {
         cancelTween(siteId);
         const w = Number(c.slider.value);
         setWidthUI(siteId, w);
-        chrome.storage.local.set({ [key]: w });
+        // During drag, disable the page-side CSS transition so width tracks
+        // the thumb 1:1 with no lag.
+        chrome.storage.local.set({ [key]: w, widthAnimMs: 0 });
+    });
+    // When the drag ends, restore the animated duration so the next preset
+    // click (or any future change) gets the smooth transition again.
+    c.slider.addEventListener('change', () => {
+        chrome.storage.local.set({ widthAnimMs: TWEEN_DURATION });
     });
 
     c.presets.forEach(btn => {
