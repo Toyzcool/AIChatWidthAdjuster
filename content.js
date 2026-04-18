@@ -875,3 +875,727 @@ function unmountPrintOverlay() {
     const existing = document.getElementById(PRINT_OVERLAY_ID);
     if (existing) existing.remove();
 }
+
+// --- Bookmarks panel -----------------------------------------------------
+// Right-side collapsible panel that lists bookmarks for the active
+// conversation. Stage 1 scope: UI shell only (frame + collapse/expand,
+// persisted state). Storage, context menu, and message anchoring land in
+// subsequent commits.
+//
+// Scoped to ChatGPT for the MVP — Claude and Gemini will be added once the
+// ChatGPT flow is proven.
+
+const BOOKMARKS_PANEL_ID = 'ai-toolbox-bookmarks-panel';
+const BOOKMARKS_STATE_KEY = 'bookmarksPanelCollapsed';
+const BOOKMARKS_SUPPORTED_SITES = new Set(['chatgptWidth']);
+const BOOKMARKS_STORAGE_PREFIX = 'bookmarks:';
+
+function bookmarksSupportedForCurrentSite() {
+    return !!site && BOOKMARKS_SUPPORTED_SITES.has(site.storageKey);
+}
+
+// Extract the conversation identifier the active site exposes in the URL.
+// ChatGPT uses /c/{uuid}; a brand-new conversation without an id yet returns
+// null, which the panel treats as "no bookmarks storage available yet".
+function getConversationId() {
+    if (!site) return null;
+    if (site.storageKey === 'chatgptWidth') {
+        const m = location.pathname.match(/^\/c\/([0-9a-f-]+)/i);
+        return m ? m[1] : null;
+    }
+    return null;
+}
+
+function bookmarksStorageKey(convId) {
+    return `${BOOKMARKS_STORAGE_PREFIX}${convId}`;
+}
+
+function loadBookmarks(convId, cb) {
+    if (!convId) { cb([]); return; }
+    const key = bookmarksStorageKey(convId);
+    chrome.storage.local.get(key, (r) => cb(Array.isArray(r[key]) ? r[key] : []));
+}
+
+function saveBookmarks(convId, list) {
+    if (!convId) return;
+    chrome.storage.local.set({ [bookmarksStorageKey(convId)]: list });
+}
+
+// SPA route watcher — content scripts run in an isolated world, so patching
+// history.pushState here does NOT observe the page's own navigation. The
+// reliable cross-world signal is simply the URL itself, so we poll. popstate
+// covers back/forward immediately; the 500ms poll catches pushState/
+// replaceState within half a second of the page performing them.
+function onUrlChange(cb) {
+    let last = location.href;
+    const fire = () => {
+        if (location.href === last) return;
+        last = location.href;
+        cb();
+    };
+    window.addEventListener('popstate', fire);
+    setInterval(fire, 500);
+}
+
+function mountBookmarksPanel() {
+    if (!bookmarksSupportedForCurrentSite()) return;
+    if (document.getElementById(BOOKMARKS_PANEL_ID)) return;
+
+    const panel = document.createElement('div');
+    panel.id = BOOKMARKS_PANEL_ID;
+    panel.setAttribute('data-collapsed', 'true');
+    panel.innerHTML = `
+        <button class="aitb-bm-toggle" type="button" aria-label="Toggle bookmarks">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+            </svg>
+        </button>
+        <div class="aitb-bm-body">
+            <div class="aitb-bm-header">
+                <span class="aitb-bm-title">Bookmarks</span>
+                <button class="aitb-bm-collapse" type="button" aria-label="Collapse">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 18l6-6-6-6"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="aitb-bm-list">
+                <div class="aitb-bm-empty">No bookmarks yet. Select text or right-click a message to add one.</div>
+            </div>
+        </div>
+    `;
+
+    ensureStyle('ai-toolbox-bookmarks-style', BOOKMARKS_CSS);
+    document.body.appendChild(panel);
+
+    const toggle = () => setPanelCollapsed(!isPanelCollapsed());
+    panel.querySelector('.aitb-bm-toggle').addEventListener('click', toggle);
+    panel.querySelector('.aitb-bm-collapse').addEventListener('click', toggle);
+
+    chrome.storage.local.get(BOOKMARKS_STATE_KEY, (r) => {
+        setPanelCollapsed(r[BOOKMARKS_STATE_KEY] !== false);
+    });
+
+    refreshBookmarkList();
+    onUrlChange(refreshBookmarkList);
+
+    // Storage-level updates from another tab or future in-page writes should
+    // re-render immediately so bookmarks stay in sync without a manual reload.
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local') return;
+        const convId = getConversationId();
+        if (convId && changes[bookmarksStorageKey(convId)]) refreshBookmarkList();
+    });
+
+    attachBookmarkContextMenu();
+}
+
+// Wire a capture-phase contextmenu listener so we can pre-empt the page's
+// own handlers when the click lands inside a message. Falls through to the
+// native menu in every other case.
+function attachBookmarkContextMenu() {
+    document.addEventListener('contextmenu', (e) => {
+        const msgEl = findMessageElement(e.target);
+        if (!msgEl) return;
+        const sel = window.getSelection();
+        const selectedText = sel ? sel.toString().trim() : '';
+
+        // If the click didn't land inside the selection, treat it as a
+        // whole-message right-click even when text is selected elsewhere.
+        let inSelection = false;
+        if (selectedText && sel.rangeCount) {
+            const range = sel.getRangeAt(0);
+            inSelection = range.intersectsNode(e.target) || msgEl.contains(range.commonAncestorContainer);
+        }
+
+        e.preventDefault();
+        if (selectedText && inSelection) {
+            openBookmarkMenu(e.clientX, e.clientY, {
+                kind: 'selection', el: msgEl, text: selectedText,
+            });
+        } else {
+            openBookmarkMenu(e.clientX, e.clientY, { kind: 'message', el: msgEl });
+        }
+    }, true);
+
+    // Any left click dismisses an open menu.
+    document.addEventListener('click', (e) => {
+        const menu = document.getElementById(BOOKMARK_MENU_ID);
+        if (menu && !menu.contains(e.target)) closeBookmarkMenu();
+    }, true);
+    document.addEventListener('scroll', closeBookmarkMenu, true);
+}
+
+const BOOKMARK_MENU_ID = 'ai-toolbox-bookmark-menu';
+
+// Find the nearest ChatGPT message container. data-message-id is on the
+// element that wraps a single turn; data-message-author-role lives on the
+// same node and tells us user vs assistant.
+function findMessageElement(node) {
+    if (!(node instanceof Element)) return null;
+    return node.closest('[data-message-id]');
+}
+
+function openBookmarkMenu(x, y, ctx) {
+    closeBookmarkMenu();
+    const menu = document.createElement('div');
+    menu.id = BOOKMARK_MENU_ID;
+    const label = ctx.kind === 'selection' ? 'Bookmark selected text' : 'Bookmark this message';
+    menu.innerHTML = `
+        <button type="button" data-action="add">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span>${label}</span>
+        </button>
+    `;
+    menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
+    menu.style.top = `${Math.min(y, window.innerHeight - 60)}px`;
+    document.body.appendChild(menu);
+
+    menu.querySelector('[data-action="add"]').addEventListener('click', async () => {
+        closeBookmarkMenu();
+        if (ctx.kind === 'selection') await addSelectionBookmark(ctx.el, ctx.text);
+        else await addMessageBookmark(ctx.el);
+    });
+}
+
+function closeBookmarkMenu() {
+    const menu = document.getElementById(BOOKMARK_MENU_ID);
+    if (menu) menu.remove();
+}
+
+async function addMessageBookmark(msgEl) {
+    const convId = getConversationId();
+    if (!convId) return;
+    const messageId = msgEl.getAttribute('data-message-id');
+    const role = msgEl.getAttribute('data-message-author-role') === 'user' ? 'user' : 'assistant';
+    const text = (msgEl.innerText || msgEl.textContent || '').trim().replace(/\s+/g, ' ');
+    const snippet = text.length > 200 ? text.slice(0, 200) + '…' : text;
+
+    // Optional note — prompt() is deliberate for the MVP; a proper inline
+    // editor lands in stage 5 along with delete/edit affordances.
+    const note = window.prompt('Optional note for this bookmark:', '') || '';
+
+    const bookmark = {
+        id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: Date.now(),
+        messageId,
+        role,
+        snippet,
+        note: note.trim(),
+    };
+
+    loadBookmarks(convId, (existing) => {
+        saveBookmarks(convId, [...existing, bookmark]);
+    });
+
+    setPanelCollapsed(false);
+}
+
+async function addSelectionBookmark(msgEl, selectionText) {
+    const convId = getConversationId();
+    if (!convId) return;
+    const messageId = msgEl.getAttribute('data-message-id');
+    const role = msgEl.getAttribute('data-message-author-role') === 'user' ? 'user' : 'assistant';
+    const note = window.prompt('Optional note for this selection:', '') || '';
+    const trimmed = selectionText.replace(/\s+/g, ' ').trim();
+
+    const bookmark = {
+        id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: Date.now(),
+        messageId,
+        role,
+        snippet: trimmed.length > 200 ? trimmed.slice(0, 200) + '…' : trimmed,
+        note: note.trim(),
+        selection: { text: trimmed },
+    };
+
+    loadBookmarks(convId, (existing) => {
+        saveBookmarks(convId, [...existing, bookmark]);
+    });
+
+    setPanelCollapsed(false);
+}
+
+// Locate a message node in the DOM. ChatGPT sometimes re-renders messages
+// (regenerate response, edit), so a saved data-message-id may not currently
+// be mounted. Return null in that case — caller decides how to handle.
+function findMessageById(messageId) {
+    if (!messageId) return null;
+    return document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+}
+
+// Scroll the message into view, then (if the bookmark captured a selection)
+// walk the text nodes inside the message to find that substring and visually
+// highlight the matching range for ~2s.
+function scrollToBookmark(bm) {
+    const msgEl = findMessageById(bm.messageId);
+    if (!msgEl) {
+        // Message currently unmounted (virtualization) or removed. Best
+        // effort: do nothing. A future stage could trigger site-specific
+        // lazy-load before giving up.
+        return;
+    }
+    msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    const targetText = bm.selection?.text;
+    const wanted = targetText ? targetText.toLowerCase() : '';
+    if (!wanted) {
+        flashHighlight(msgEl);
+        return;
+    }
+
+    // Build the concatenated innerText and a mapping back to the underlying
+    // text nodes so we can construct a Range once we find the substring.
+    const walker = document.createTreeWalker(msgEl, NodeFilter.SHOW_TEXT);
+    const segments = [];
+    let joined = '';
+    let node;
+    while ((node = walker.nextNode())) {
+        const text = node.nodeValue;
+        if (!text) continue;
+        segments.push({ node, start: joined.length, end: joined.length + text.length });
+        joined += text;
+    }
+    const idx = joined.toLowerCase().indexOf(wanted);
+    if (idx === -1) {
+        flashHighlight(msgEl);
+        return;
+    }
+
+    const range = document.createRange();
+    const startSeg = segments.find(s => idx >= s.start && idx < s.end);
+    const endSeg = segments.find(s => (idx + wanted.length) > s.start && (idx + wanted.length) <= s.end);
+    if (!startSeg || !endSeg) {
+        flashHighlight(msgEl);
+        return;
+    }
+    range.setStart(startSeg.node, idx - startSeg.start);
+    range.setEnd(endSeg.node, (idx + wanted.length) - endSeg.start);
+
+    flashHighlightRange(range);
+}
+
+// Full-message flash — used when no selection was captured or re-location
+// failed. A CSS class cycles in and fades, avoiding any DOM mutation.
+function flashHighlight(el) {
+    el.classList.add('aitb-bm-flash');
+    setTimeout(() => el.classList.remove('aitb-bm-flash'), 1800);
+}
+
+// Range flash — wrap the matched range with a <mark> that has our highlight
+// styling, then unwrap after the animation. We keep the wrap tiny and remove
+// it cleanly to avoid polluting the host DOM with residual nodes.
+function flashHighlightRange(range) {
+    const mark = document.createElement('mark');
+    mark.className = 'aitb-bm-mark';
+    try {
+        range.surroundContents(mark);
+    } catch {
+        // Range spans element boundaries — fall back to flashing the closest
+        // block container so we still give visual feedback.
+        const fallback = range.commonAncestorContainer.nodeType === 1
+            ? range.commonAncestorContainer
+            : range.commonAncestorContainer.parentElement;
+        if (fallback) flashHighlight(fallback);
+        return;
+    }
+    mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => {
+        const parent = mark.parentNode;
+        if (!parent) return;
+        while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+        parent.removeChild(mark);
+        parent.normalize();
+    }, 1800);
+}
+
+function refreshBookmarkList() {
+    const panel = document.getElementById(BOOKMARKS_PANEL_ID);
+    if (!panel) return;
+    const list = panel.querySelector('.aitb-bm-list');
+    if (!list) return;
+
+    const convId = getConversationId();
+    if (!convId) {
+        list.innerHTML = `
+            <div class="aitb-bm-empty">
+                Start or open a conversation to begin bookmarking.
+            </div>`;
+        return;
+    }
+
+    loadBookmarks(convId, (bookmarks) => {
+        if (!bookmarks.length) {
+            list.innerHTML = `
+                <div class="aitb-bm-empty">
+                    No bookmarks yet. Select text or right-click a message to add one.
+                </div>`;
+            return;
+        }
+        list.innerHTML = bookmarks.map(renderBookmarkItem).join('');
+        // Click-to-jump wiring — event delegation keeps handler lifetime tied
+        // to the list container, so innerHTML rewrites don't leak listeners.
+        list.querySelectorAll('.aitb-bm-item').forEach((item) => {
+            item.addEventListener('click', (e) => {
+                // Action buttons handle their own clicks; don't jump in that case.
+                if (e.target.closest('.aitb-bm-act')) return;
+                const id = item.getAttribute('data-id');
+                const bm = bookmarks.find(b => b.id === id);
+                if (bm) scrollToBookmark(bm);
+            });
+        });
+        list.querySelectorAll('.aitb-bm-act').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const act = btn.getAttribute('data-act');
+                const id = btn.closest('.aitb-bm-item').getAttribute('data-id');
+                if (act === 'delete') deleteBookmark(id);
+                else if (act === 'edit') editBookmarkNote(id);
+            });
+        });
+    });
+}
+
+function deleteBookmark(id) {
+    const convId = getConversationId();
+    if (!convId) return;
+    loadBookmarks(convId, (existing) => {
+        saveBookmarks(convId, existing.filter(b => b.id !== id));
+    });
+}
+
+function editBookmarkNote(id) {
+    const convId = getConversationId();
+    if (!convId) return;
+    loadBookmarks(convId, (existing) => {
+        const bm = existing.find(b => b.id === id);
+        if (!bm) return;
+        const next = window.prompt('Edit note:', bm.note || '');
+        if (next === null) return; // cancelled
+        bm.note = next.trim();
+        saveBookmarks(convId, existing);
+    });
+}
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+}
+
+function renderBookmarkItem(bm) {
+    const body = bm.selection?.text || bm.snippet || '';
+    const note = bm.note ? `<div class="aitb-bm-note">${escapeHtml(bm.note)}</div>` : '';
+    const roleLabel = bm.role === 'assistant' ? 'Assistant' : 'User';
+    return `
+        <div class="aitb-bm-item" data-id="${escapeHtml(bm.id)}">
+            <div class="aitb-bm-item-head">
+                <div class="aitb-bm-item-role" data-role="${escapeHtml(bm.role)}">${roleLabel}</div>
+                <div class="aitb-bm-item-actions">
+                    <button class="aitb-bm-act" data-act="edit" title="Edit note" aria-label="Edit note">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 20h9"/>
+                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+                        </svg>
+                    </button>
+                    <button class="aitb-bm-act" data-act="delete" title="Delete bookmark" aria-label="Delete bookmark">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 6h18"/>
+                            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="aitb-bm-item-body">${escapeHtml(body)}</div>
+            ${note}
+        </div>
+    `;
+}
+
+function isPanelCollapsed() {
+    const panel = document.getElementById(BOOKMARKS_PANEL_ID);
+    return !panel || panel.getAttribute('data-collapsed') === 'true';
+}
+
+function setPanelCollapsed(collapsed) {
+    const panel = document.getElementById(BOOKMARKS_PANEL_ID);
+    if (!panel) return;
+    panel.setAttribute('data-collapsed', collapsed ? 'true' : 'false');
+    chrome.storage.local.set({ [BOOKMARKS_STATE_KEY]: collapsed });
+}
+
+// Panel CSS is scoped under the fixed ID — we don't leak styles to the host
+// page. Color values follow Apple-ish semantic tokens similar to popup.html.
+const BOOKMARKS_CSS = `
+    #${BOOKMARKS_PANEL_ID} {
+        position: fixed;
+        top: 0;
+        right: 0;
+        height: 100vh;
+        z-index: 2147483646;
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+            "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", sans-serif;
+        font-size: 13px;
+        pointer-events: none;
+    }
+    #${BOOKMARKS_PANEL_ID} > * { pointer-events: auto; }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        transform: translateY(-50%);
+        width: 32px;
+        height: 56px;
+        border: none;
+        border-radius: 10px 0 0 10px;
+        background: rgba(255, 255, 255, 0.92);
+        color: #1d1d1f;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.2s ease, background 0.2s ease, opacity 0.2s ease;
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle:hover { transform: translateY(-50%) translateX(-2px); }
+    #${BOOKMARKS_PANEL_ID}[data-collapsed="false"] .aitb-bm-toggle { opacity: 0; pointer-events: none; }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-body {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 320px;
+        height: 100vh;
+        background: rgba(255, 255, 255, 0.96);
+        border-left: 0.5px solid rgba(0, 0, 0, 0.1);
+        box-shadow: -8px 0 30px rgba(0, 0, 0, 0.08);
+        display: flex;
+        flex-direction: column;
+        transform: translateX(100%);
+        transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+    }
+    #${BOOKMARKS_PANEL_ID}[data-collapsed="false"] .aitb-bm-body { transform: translateX(0); }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 14px 10px;
+        border-bottom: 0.5px solid rgba(0, 0, 0, 0.08);
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #1d1d1f;
+        letter-spacing: -0.01em;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse {
+        background: transparent;
+        border: none;
+        color: rgba(60, 60, 67, 0.6);
+        padding: 4px;
+        border-radius: 6px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        transition: background 0.15s ease;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse:hover {
+        background: rgba(0, 0, 0, 0.05);
+    }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-empty {
+        padding: 32px 16px;
+        text-align: center;
+        color: rgba(60, 60, 67, 0.55);
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item {
+        padding: 10px 12px;
+        margin-bottom: 6px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.03);
+        cursor: pointer;
+        transition: background 0.12s ease;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover { background: rgba(0, 0, 0, 0.06); }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 4px;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(60, 60, 67, 0.55);
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-actions {
+        display: flex;
+        gap: 2px;
+        opacity: 0;
+        transition: opacity 0.12s ease;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover .aitb-bm-item-actions { opacity: 1; }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-act {
+        background: transparent;
+        border: none;
+        padding: 3px;
+        border-radius: 5px;
+        color: rgba(60, 60, 67, 0.55);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.12s ease, color 0.12s ease;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-act:hover { background: rgba(0, 0, 0, 0.06); color: #1d1d1f; }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-act[data-act="delete"]:hover { color: #FF3B30; }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role[data-role="assistant"] { color: #AF52DE; }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role[data-role="user"] { color: #007AFF; }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-body {
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: #1d1d1f;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-note {
+        margin-top: 6px;
+        padding: 4px 8px;
+        font-size: 11.5px;
+        color: rgba(60, 60, 67, 0.7);
+        background: rgba(0, 122, 255, 0.08);
+        border-radius: 6px;
+        border-left: 2px solid rgba(0, 122, 255, 0.4);
+    }
+
+    .aitb-bm-flash {
+        animation: aitb-bm-flash-anim 1.6s ease-out;
+    }
+    @keyframes aitb-bm-flash-anim {
+        0%   { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+        15%  { box-shadow: 0 0 0 6px rgba(0, 122, 255, 0.35); }
+        100% { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+    }
+    mark.aitb-bm-mark {
+        background: linear-gradient(180deg, rgba(255, 214, 10, 0.7), rgba(255, 159, 10, 0.6));
+        color: inherit;
+        padding: 0 2px;
+        border-radius: 3px;
+        animation: aitb-bm-mark-fade 1.8s ease-out forwards;
+    }
+    @keyframes aitb-bm-mark-fade {
+        0%   { background: rgba(255, 214, 10, 0.85); }
+        70%  { background: rgba(255, 214, 10, 0.7); }
+        100% { background: transparent; }
+    }
+
+    #${BOOKMARK_MENU_ID} {
+        position: fixed;
+        z-index: 2147483647;
+        min-width: 200px;
+        padding: 4px;
+        background: rgba(255, 255, 255, 0.98);
+        border-radius: 10px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        font-size: 13px;
+        color: #1d1d1f;
+        animation: aitb-menu-in 0.12s ease-out;
+    }
+    @keyframes aitb-menu-in {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    #${BOOKMARK_MENU_ID} button {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 10px;
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition: background 0.1s ease;
+    }
+    #${BOOKMARK_MENU_ID} button:hover { background: rgba(0, 122, 255, 0.12); }
+
+    @media (prefers-color-scheme: dark) {
+        #${BOOKMARK_MENU_ID} {
+            background: rgba(44, 44, 46, 0.98);
+            color: rgba(255, 255, 255, 0.92);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+        #${BOOKMARK_MENU_ID} button:hover { background: rgba(10, 132, 255, 0.22); }
+    }
+
+    @media (prefers-color-scheme: dark) {
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle {
+            background: rgba(44, 44, 46, 0.9);
+            color: rgba(255, 255, 255, 0.92);
+        }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-body {
+            background: rgba(28, 28, 30, 0.96);
+            border-left-color: rgba(255, 255, 255, 0.08);
+        }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-title { color: rgba(255, 255, 255, 0.95); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-header { border-bottom-color: rgba(255, 255, 255, 0.08); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse { color: rgba(235, 235, 245, 0.5); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse:hover { background: rgba(255, 255, 255, 0.06); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-empty { color: rgba(235, 235, 245, 0.45); }
+
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-item { background: rgba(255, 255, 255, 0.04); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover { background: rgba(255, 255, 255, 0.08); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role { color: rgba(235, 235, 245, 0.45); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-act { color: rgba(235, 235, 245, 0.55); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-act:hover { background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.95); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-item-body { color: rgba(255, 255, 255, 0.92); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-note {
+            color: rgba(235, 235, 245, 0.72);
+            background: rgba(10, 132, 255, 0.14);
+            border-left-color: rgba(10, 132, 255, 0.5);
+        }
+    }
+`;
+
+// Mount after DOM is ready. content_scripts runs at document_start so body
+// may not exist yet.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mountBookmarksPanel);
+} else {
+    mountBookmarksPanel();
+}
