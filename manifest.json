@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AIToolbox",
-  "version": "2.6",
-  "description": "A toolbox for Gemini, Claude, and ChatGPT. Adjust chat width, export conversations as Markdown or PDF, fix tables, and toggle code auto-wrap.",
+  "version": "3.0",
+  "description": "Independently adjust chat width for Gemini, Claude, and ChatGPT. Export conversations as Markdown or PDF. Toggle code auto-wrap.",
   "permissions": [
     "storage",
     "tabs"
