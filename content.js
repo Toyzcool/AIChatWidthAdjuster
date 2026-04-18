@@ -318,6 +318,16 @@ function walk(node, out, ctx) {
     // copy/retry buttons, etc.). Their labels otherwise end up in the output.
     if (shouldSkipElement(node)) return;
 
+    // KaTeX / MathJax rendered math. Extract the original LaTeX from the
+    // <annotation> element (KaTeX puts it in .katex-mathml) and emit it as a
+    // $...$ span; without this the visible formula is missed because the
+    // .katex-html rendering is aria-hidden and gets skipped.
+    const mathOut = tryExtractMath(node);
+    if (mathOut !== null) {
+        out.push(mathOut);
+        return;
+    }
+
     const tag = node.tagName.toLowerCase();
     switch (tag) {
         case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': {
@@ -411,6 +421,23 @@ function walk(node, out, ctx) {
 
 function walkChildren(node, out, ctx) {
     for (const child of node.childNodes) walk(child, out, ctx);
+}
+
+function tryExtractMath(el) {
+    const classes = el.className || '';
+    const tag = el.tagName.toLowerCase();
+    const isKatex = typeof classes === 'string' && /(^|\s)katex(\s|$)/.test(classes);
+    const isMathML = tag === 'math';
+    const isMathJax = typeof classes === 'string' && /MathJax/.test(classes);
+    if (!isKatex && !isMathML && !isMathJax) return null;
+    // Only act at the outermost wrapper to avoid emitting the formula twice.
+    // If an ancestor is already a math wrapper, defer to it.
+    if (el.parentElement && el.parentElement.closest('.katex, .MathJax, math')) return null;
+    const annotation = el.querySelector('annotation[encoding="application/x-tex"], annotation');
+    const tex = (annotation ? annotation.textContent : '').trim();
+    if (!tex) return '';
+    const isDisplay = !!(el.closest && el.closest('.katex-display, .MathJax_Display'));
+    return isDisplay ? `\n\n$$${tex}$$\n\n` : `$${tex}$`;
 }
 
 function shouldSkipElement(el) {
