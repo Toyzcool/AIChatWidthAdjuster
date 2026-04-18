@@ -5,8 +5,10 @@ const SITES = {
     chatgpt: { storageKey: 'chatgptWidth', defaultWidth: 1000, hosts: ['chatgpt.com', 'chat.openai.com'] },
 };
 
-const TWEEN_DURATION = 320; // ms
-const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+// Match the page-side CSS transition so the popup slider and the page width
+// animate in lockstep. Keep the easing identical to content.js's cubic-bezier.
+const TWEEN_DURATION = 420; // ms
+const easeOutQuint = (t) => 1 - Math.pow(1 - t, 5);
 
 const tabBtns = document.querySelectorAll('.tab-btn');
 const panels = document.querySelectorAll('[data-panel]');
@@ -49,15 +51,15 @@ function tweenSliderTo(siteId, target) {
     cancelTween(siteId);
     const c = controls[siteId];
     const from = Number(c.slider.value);
-    if (from === target) {
-        chrome.storage.local.set({ [SITES[siteId].storageKey]: target });
-        return;
-    }
+    // Commit storage immediately so the page begins its CSS transition in
+    // parallel with the popup's slider tween (avoids sequential choppiness).
+    chrome.storage.local.set({ [SITES[siteId].storageKey]: target });
+    if (from === target) return;
     const start = performance.now();
     updatePresets(siteId, target);
     const step = (now) => {
         const t = Math.min(1, (now - start) / TWEEN_DURATION);
-        const current = from + (target - from) * easeOutCubic(t);
+        const current = from + (target - from) * easeOutQuint(t);
         c.slider.value = current;
         c.display.textContent = `${Math.round(current)} px`;
         if (t < 1) {
@@ -65,7 +67,6 @@ function tweenSliderTo(siteId, target) {
         } else {
             c.tweenId = null;
             setWidthUI(siteId, target);
-            chrome.storage.local.set({ [SITES[siteId].storageKey]: target });
         }
     };
     c.tweenId = requestAnimationFrame(step);

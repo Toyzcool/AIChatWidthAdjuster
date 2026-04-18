@@ -21,7 +21,7 @@ const SITES = {
                 width: 100% !important;
                 margin-left: auto !important;
                 margin-right: auto !important;
-                transition: max-width 0.25s ease;
+                transition: max-width 0.42s cubic-bezier(0.22, 1, 0.36, 1);
             }
             .conversation-container user-query,
             user-query {
@@ -81,7 +81,7 @@ const SITES = {
                Widen messages… */
             [data-autoscroll-container="true"] .max-w-3xl {
                 max-width: ${width}px !important;
-                transition: max-width 0.25s ease;
+                transition: max-width 0.42s cubic-bezier(0.22, 1, 0.36, 1);
             }
             /* …but keep the composer pinned at its native width. It has w-full
                and lives inside the widened column, so without this it would
@@ -114,7 +114,7 @@ const SITES = {
                the composer at its native width. */
             main section [class*="--thread-content-max-width"] {
                 --thread-content-max-width: ${width}px !important;
-                transition: max-width 0.25s ease;
+                transition: max-width 0.42s cubic-bezier(0.22, 1, 0.36, 1);
             }
             main .markdown {
                 max-width: 100% !important;
