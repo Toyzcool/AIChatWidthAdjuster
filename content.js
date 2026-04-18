@@ -20,39 +20,10 @@ const DEFAULT_DURATION_MS = 420;
 // just render a clean copy that has nothing but conversation content.
 const PRINT_OVERLAY_ID = 'ai-chat-print-overlay';
 
-const PRINT_OVERLAY_CSS = `
-    /* On-screen preview while we wait to call window.print(). Lets the user
-       see exactly what will be sent to the printer so they can tell whether
-       a missing-text problem is in the cloned content itself or only appears
-       once print media rules kick in. */
-    #${PRINT_OVERLAY_ID} {
-        position: fixed !important;
-        inset: 0 !important;
-        z-index: 2147483647 !important;
-        background: #ffffff !important;
-        color: #000 !important;
-        overflow: auto !important;
-        padding: 24px 40px !important;
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif !important;
-        font-size: 14px !important;
-        line-height: 1.6 !important;
-    }
-    #${PRINT_OVERLAY_ID}::before {
-        content: "Preparing PDF — the print dialog will open in a moment…";
-        display: block;
-        padding: 8px 12px;
-        margin-bottom: 16px;
-        background: #F2F2F7;
-        border-radius: 8px;
-        font-size: 12px;
-        color: #666;
-    }
-    @media print {
-        /* Minimal rules. If this doesn't work, the issue is inherent to
-           print-rendering the overlay inside the live document's body. */
-        body > *:not(#${PRINT_OVERLAY_ID}) { display: none !important; }
-    }
-`;
+// Parent-page CSS is no longer used to style print output — the iframe
+// owns its own stylesheet. Keep an empty block for ensureStyle() so the
+// upsert logic stays consistent.
+const PRINT_OVERLAY_CSS = '';
 
 const SITES = {
     gemini: {
@@ -635,11 +606,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
             mountPrintOverlay(root);
             sendResponse({ ok: true });
-            // Short delay so you can visually confirm the cloned conversation
-            // appears correctly on screen before the print dialog takes over.
-            // If text is missing on screen too, the issue is in the clone.
-            // If text shows on screen but not in print, it's a print-CSS issue.
-            setTimeout(() => window.print(), 1500);
+            // mountPrintOverlay now owns the print timing — it calls print
+            // from inside the isolated iframe after a short layout delay.
         } catch (e) {
             console.error('[AI Chat Width] PDF export failed:', e);
             unmountPrintOverlay();
@@ -714,24 +682,91 @@ function sanitizeToPrintable(src) {
     return out;
 }
 
+// Render the printable content in a fresh iframe document. The iframe gets
+// its own blank document with no inherited CSS from the host page, so the
+// print-media rendering isn't disturbed by the parent site's stylesheets
+// (ChatGPT's in particular had been hiding prose at print time even when
+// the on-screen overlay rendered fine).
 function mountPrintOverlay(root) {
     unmountPrintOverlay();
-    const overlay = document.createElement('div');
-    overlay.id = PRINT_OVERLAY_ID;
-    // Clone the rendered conversation subtree — this preserves KaTeX, tables,
-    // code highlighting, and images exactly as they look on screen.
-    overlay.appendChild(root.cloneNode(true));
-    document.body.appendChild(overlay);
+    const iframe = document.createElement('iframe');
+    iframe.id = PRINT_OVERLAY_ID;
+    // Fullscreen fixed so user can see the preview before print dialog takes over.
+    iframe.style.cssText = [
+        'position: fixed',
+        'inset: 0',
+        'width: 100%',
+        'height: 100%',
+        'border: 0',
+        'z-index: 2147483647',
+        'background: #ffffff',
+    ].join(';');
+    document.body.appendChild(iframe);
 
-    // Remove the overlay once the print dialog is dismissed (either saved or
-    // cancelled). Fallback timer in case afterprint doesn't fire (some Chrome
-    // builds skip it when the dialog is closed quickly).
+    const cloned = root.cloneNode(true);
+    const doc = iframe.contentDocument;
+    doc.open();
+    doc.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Conversation</title></head><body></body></html>');
+    doc.close();
+
+    // Style inside the iframe document. Because there's no host CSS here,
+    // these rules are the ONLY things shaping the printed page.
+    const style = doc.createElement('style');
+    style.textContent = `
+        html, body { margin: 0; padding: 0; background: #fff; color: #000; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                "Helvetica Neue", "PingFang SC", "Hiragino Sans GB",
+                "Microsoft YaHei", sans-serif;
+            font-size: 12pt;
+            line-height: 1.6;
+            padding: 16pt 24pt;
+        }
+        h1, h2, h3, h4, h5, h6 { break-after: avoid; page-break-after: avoid; }
+        pre, table, blockquote, figure {
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+        pre, code { white-space: pre-wrap; word-wrap: break-word; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+        pre { background: #f6f6f6; padding: 8pt; border-radius: 4pt; }
+        code { background: #f1f1f1; padding: 0 3pt; border-radius: 2pt; }
+        blockquote {
+            border-left: 3pt solid #ddd;
+            margin: 8pt 0;
+            padding: 4pt 12pt;
+            color: #333;
+        }
+        table { border-collapse: collapse; width: 100%; margin: 8pt 0; }
+        th, td { border: 1pt solid #ccc; padding: 4pt 6pt; text-align: left; vertical-align: top; }
+        th { background: #f5f5f5; font-weight: 600; }
+        ul, ol { padding-left: 24pt; }
+        a { color: #1155cc; text-decoration: underline; }
+        a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 9pt; color: #666; }
+        img { max-width: 100%; height: auto; }
+        hr { border: none; border-top: 1pt solid #ddd; margin: 12pt 0; }
+        [data-role="user"] { font-weight: 500; margin-top: 18pt; padding-bottom: 6pt; border-bottom: 0.5pt solid #eee; }
+        [data-role="assistant"] { margin-top: 12pt; }
+        @media print {
+            body { padding: 0; }
+        }
+    `;
+    doc.head.appendChild(style);
+    doc.body.appendChild(cloned);
+
+    // Trigger print from within the iframe, not the top window, so the print
+    // target is the iframe document alone.
     const cleanup = () => {
-        window.removeEventListener('afterprint', cleanup);
+        iframe.contentWindow && iframe.contentWindow.removeEventListener('afterprint', cleanup);
         unmountPrintOverlay();
     };
-    window.addEventListener('afterprint', cleanup);
+    iframe.contentWindow.addEventListener('afterprint', cleanup);
     setTimeout(cleanup, 60000);
+
+    // Give the iframe a beat to lay out before printing.
+    setTimeout(() => {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+    }, 1500);
 }
 
 function unmountPrintOverlay() {
