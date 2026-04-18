@@ -921,10 +921,11 @@ function saveBookmarks(convId, list) {
     chrome.storage.local.set({ [bookmarksStorageKey(convId)]: list });
 }
 
-// SPA route watcher — ChatGPT, Claude, and Gemini all mutate history
-// programmatically rather than reloading. We patch pushState/replaceState to
-// dispatch a synthetic event, plus listen for popstate, then coalesce both
-// into a single onUrlChange callback.
+// SPA route watcher — content scripts run in an isolated world, so patching
+// history.pushState here does NOT observe the page's own navigation. The
+// reliable cross-world signal is simply the URL itself, so we poll. popstate
+// covers back/forward immediately; the 500ms poll catches pushState/
+// replaceState within half a second of the page performing them.
 function onUrlChange(cb) {
     let last = location.href;
     const fire = () => {
@@ -932,17 +933,8 @@ function onUrlChange(cb) {
         last = location.href;
         cb();
     };
-    const wrap = (name) => {
-        const orig = history[name];
-        history[name] = function () {
-            const ret = orig.apply(this, arguments);
-            setTimeout(fire, 0);
-            return ret;
-        };
-    };
-    wrap('pushState');
-    wrap('replaceState');
     window.addEventListener('popstate', fire);
+    setInterval(fire, 500);
 }
 
 function mountBookmarksPanel() {
