@@ -1241,12 +1241,44 @@ function refreshBookmarkList() {
         // Click-to-jump wiring — event delegation keeps handler lifetime tied
         // to the list container, so innerHTML rewrites don't leak listeners.
         list.querySelectorAll('.aitb-bm-item').forEach((item) => {
-            item.addEventListener('click', () => {
+            item.addEventListener('click', (e) => {
+                // Action buttons handle their own clicks; don't jump in that case.
+                if (e.target.closest('.aitb-bm-act')) return;
                 const id = item.getAttribute('data-id');
                 const bm = bookmarks.find(b => b.id === id);
                 if (bm) scrollToBookmark(bm);
             });
         });
+        list.querySelectorAll('.aitb-bm-act').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const act = btn.getAttribute('data-act');
+                const id = btn.closest('.aitb-bm-item').getAttribute('data-id');
+                if (act === 'delete') deleteBookmark(id);
+                else if (act === 'edit') editBookmarkNote(id);
+            });
+        });
+    });
+}
+
+function deleteBookmark(id) {
+    const convId = getConversationId();
+    if (!convId) return;
+    loadBookmarks(convId, (existing) => {
+        saveBookmarks(convId, existing.filter(b => b.id !== id));
+    });
+}
+
+function editBookmarkNote(id) {
+    const convId = getConversationId();
+    if (!convId) return;
+    loadBookmarks(convId, (existing) => {
+        const bm = existing.find(b => b.id === id);
+        if (!bm) return;
+        const next = window.prompt('Edit note:', bm.note || '');
+        if (next === null) return; // cancelled
+        bm.note = next.trim();
+        saveBookmarks(convId, existing);
     });
 }
 
@@ -1262,7 +1294,26 @@ function renderBookmarkItem(bm) {
     const roleLabel = bm.role === 'assistant' ? 'Assistant' : 'User';
     return `
         <div class="aitb-bm-item" data-id="${escapeHtml(bm.id)}">
-            <div class="aitb-bm-item-role" data-role="${escapeHtml(bm.role)}">${roleLabel}</div>
+            <div class="aitb-bm-item-head">
+                <div class="aitb-bm-item-role" data-role="${escapeHtml(bm.role)}">${roleLabel}</div>
+                <div class="aitb-bm-item-actions">
+                    <button class="aitb-bm-act" data-act="edit" title="Edit note" aria-label="Edit note">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 20h9"/>
+                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+                        </svg>
+                    </button>
+                    <button class="aitb-bm-act" data-act="delete" title="Delete bookmark" aria-label="Delete bookmark">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 6h18"/>
+                            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
             <div class="aitb-bm-item-body">${escapeHtml(body)}</div>
             ${note}
         </div>
@@ -1390,14 +1441,40 @@ const BOOKMARKS_CSS = `
     }
     #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover { background: rgba(0, 0, 0, 0.06); }
 
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 4px;
+    }
     #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role {
         font-size: 10px;
         font-weight: 600;
         letter-spacing: 0.04em;
         text-transform: uppercase;
         color: rgba(60, 60, 67, 0.55);
-        margin-bottom: 4px;
     }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-actions {
+        display: flex;
+        gap: 2px;
+        opacity: 0;
+        transition: opacity 0.12s ease;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover .aitb-bm-item-actions { opacity: 1; }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-act {
+        background: transparent;
+        border: none;
+        padding: 3px;
+        border-radius: 5px;
+        color: rgba(60, 60, 67, 0.55);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.12s ease, color 0.12s ease;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-act:hover { background: rgba(0, 0, 0, 0.06); color: #1d1d1f; }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-act[data-act="delete"]:hover { color: #FF3B30; }
     #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role[data-role="assistant"] { color: #AF52DE; }
     #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role[data-role="user"] { color: #007AFF; }
 
@@ -1504,6 +1581,8 @@ const BOOKMARKS_CSS = `
         #${BOOKMARKS_PANEL_ID} .aitb-bm-item { background: rgba(255, 255, 255, 0.04); }
         #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover { background: rgba(255, 255, 255, 0.08); }
         #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role { color: rgba(235, 235, 245, 0.45); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-act { color: rgba(235, 235, 245, 0.55); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-act:hover { background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.95); }
         #${BOOKMARKS_PANEL_ID} .aitb-bm-item-body { color: rgba(255, 255, 255, 0.92); }
         #${BOOKMARKS_PANEL_ID} .aitb-bm-note {
             color: rgba(235, 235, 245, 0.72);
