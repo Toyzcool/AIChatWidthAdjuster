@@ -999,14 +999,25 @@ function attachBookmarkContextMenu() {
     document.addEventListener('contextmenu', (e) => {
         const msgEl = findMessageElement(e.target);
         if (!msgEl) return;
-        // If the user has text selected, reserve the right-click for the
-        // future "bookmark selection" flow (stage 4). For now, only handle
-        // the whole-message case.
         const sel = window.getSelection();
-        if (sel && sel.toString().trim()) return;
+        const selectedText = sel ? sel.toString().trim() : '';
+
+        // If the click didn't land inside the selection, treat it as a
+        // whole-message right-click even when text is selected elsewhere.
+        let inSelection = false;
+        if (selectedText && sel.rangeCount) {
+            const range = sel.getRangeAt(0);
+            inSelection = range.intersectsNode(e.target) || msgEl.contains(range.commonAncestorContainer);
+        }
 
         e.preventDefault();
-        openBookmarkMenu(e.clientX, e.clientY, { kind: 'message', el: msgEl });
+        if (selectedText && inSelection) {
+            openBookmarkMenu(e.clientX, e.clientY, {
+                kind: 'selection', el: msgEl, text: selectedText,
+            });
+        } else {
+            openBookmarkMenu(e.clientX, e.clientY, { kind: 'message', el: msgEl });
+        }
     }, true);
 
     // Any left click dismisses an open menu.
@@ -1031,23 +1042,24 @@ function openBookmarkMenu(x, y, ctx) {
     closeBookmarkMenu();
     const menu = document.createElement('div');
     menu.id = BOOKMARK_MENU_ID;
+    const label = ctx.kind === 'selection' ? 'Bookmark selected text' : 'Bookmark this message';
     menu.innerHTML = `
         <button type="button" data-action="add">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
             </svg>
-            <span>Bookmark this message</span>
+            <span>${label}</span>
         </button>
     `;
-    // Clamp to viewport so the menu never renders off-screen.
     menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
     menu.style.top = `${Math.min(y, window.innerHeight - 60)}px`;
     document.body.appendChild(menu);
 
     menu.querySelector('[data-action="add"]').addEventListener('click', async () => {
         closeBookmarkMenu();
-        await addMessageBookmark(ctx.el);
+        if (ctx.kind === 'selection') await addSelectionBookmark(ctx.el, ctx.text);
+        else await addMessageBookmark(ctx.el);
     });
 }
 
@@ -1081,8 +1093,125 @@ async function addMessageBookmark(msgEl) {
         saveBookmarks(convId, [...existing, bookmark]);
     });
 
-    // Ensure panel is visible so the user sees the new bookmark landing.
     setPanelCollapsed(false);
+}
+
+async function addSelectionBookmark(msgEl, selectionText) {
+    const convId = getConversationId();
+    if (!convId) return;
+    const messageId = msgEl.getAttribute('data-message-id');
+    const role = msgEl.getAttribute('data-message-author-role') === 'user' ? 'user' : 'assistant';
+    const note = window.prompt('Optional note for this selection:', '') || '';
+    const trimmed = selectionText.replace(/\s+/g, ' ').trim();
+
+    const bookmark = {
+        id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: Date.now(),
+        messageId,
+        role,
+        snippet: trimmed.length > 200 ? trimmed.slice(0, 200) + '…' : trimmed,
+        note: note.trim(),
+        selection: { text: trimmed },
+    };
+
+    loadBookmarks(convId, (existing) => {
+        saveBookmarks(convId, [...existing, bookmark]);
+    });
+
+    setPanelCollapsed(false);
+}
+
+// Locate a message node in the DOM. ChatGPT sometimes re-renders messages
+// (regenerate response, edit), so a saved data-message-id may not currently
+// be mounted. Return null in that case — caller decides how to handle.
+function findMessageById(messageId) {
+    if (!messageId) return null;
+    return document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+}
+
+// Scroll the message into view, then (if the bookmark captured a selection)
+// walk the text nodes inside the message to find that substring and visually
+// highlight the matching range for ~2s.
+function scrollToBookmark(bm) {
+    const msgEl = findMessageById(bm.messageId);
+    if (!msgEl) {
+        // Message currently unmounted (virtualization) or removed. Best
+        // effort: do nothing. A future stage could trigger site-specific
+        // lazy-load before giving up.
+        return;
+    }
+    msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    const targetText = bm.selection?.text;
+    const wanted = targetText ? targetText.toLowerCase() : '';
+    if (!wanted) {
+        flashHighlight(msgEl);
+        return;
+    }
+
+    // Build the concatenated innerText and a mapping back to the underlying
+    // text nodes so we can construct a Range once we find the substring.
+    const walker = document.createTreeWalker(msgEl, NodeFilter.SHOW_TEXT);
+    const segments = [];
+    let joined = '';
+    let node;
+    while ((node = walker.nextNode())) {
+        const text = node.nodeValue;
+        if (!text) continue;
+        segments.push({ node, start: joined.length, end: joined.length + text.length });
+        joined += text;
+    }
+    const idx = joined.toLowerCase().indexOf(wanted);
+    if (idx === -1) {
+        flashHighlight(msgEl);
+        return;
+    }
+
+    const range = document.createRange();
+    const startSeg = segments.find(s => idx >= s.start && idx < s.end);
+    const endSeg = segments.find(s => (idx + wanted.length) > s.start && (idx + wanted.length) <= s.end);
+    if (!startSeg || !endSeg) {
+        flashHighlight(msgEl);
+        return;
+    }
+    range.setStart(startSeg.node, idx - startSeg.start);
+    range.setEnd(endSeg.node, (idx + wanted.length) - endSeg.start);
+
+    flashHighlightRange(range);
+}
+
+// Full-message flash — used when no selection was captured or re-location
+// failed. A CSS class cycles in and fades, avoiding any DOM mutation.
+function flashHighlight(el) {
+    el.classList.add('aitb-bm-flash');
+    setTimeout(() => el.classList.remove('aitb-bm-flash'), 1800);
+}
+
+// Range flash — wrap the matched range with a <mark> that has our highlight
+// styling, then unwrap after the animation. We keep the wrap tiny and remove
+// it cleanly to avoid polluting the host DOM with residual nodes.
+function flashHighlightRange(range) {
+    const mark = document.createElement('mark');
+    mark.className = 'aitb-bm-mark';
+    try {
+        range.surroundContents(mark);
+    } catch {
+        // Range spans element boundaries — fall back to flashing the closest
+        // block container so we still give visual feedback.
+        const fallback = range.commonAncestorContainer.nodeType === 1
+            ? range.commonAncestorContainer
+            : range.commonAncestorContainer.parentElement;
+        if (fallback) flashHighlight(fallback);
+        return;
+    }
+    mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => {
+        const parent = mark.parentNode;
+        if (!parent) return;
+        while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+        parent.removeChild(mark);
+        parent.normalize();
+    }, 1800);
 }
 
 function refreshBookmarkList() {
@@ -1109,6 +1238,15 @@ function refreshBookmarkList() {
             return;
         }
         list.innerHTML = bookmarks.map(renderBookmarkItem).join('');
+        // Click-to-jump wiring — event delegation keeps handler lifetime tied
+        // to the list container, so innerHTML rewrites don't leak listeners.
+        list.querySelectorAll('.aitb-bm-item').forEach((item) => {
+            item.addEventListener('click', () => {
+                const id = item.getAttribute('data-id');
+                const bm = bookmarks.find(b => b.id === id);
+                if (bm) scrollToBookmark(bm);
+            });
+        });
     });
 }
 
@@ -1280,6 +1418,27 @@ const BOOKMARKS_CSS = `
         background: rgba(0, 122, 255, 0.08);
         border-radius: 6px;
         border-left: 2px solid rgba(0, 122, 255, 0.4);
+    }
+
+    .aitb-bm-flash {
+        animation: aitb-bm-flash-anim 1.6s ease-out;
+    }
+    @keyframes aitb-bm-flash-anim {
+        0%   { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+        15%  { box-shadow: 0 0 0 6px rgba(0, 122, 255, 0.35); }
+        100% { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+    }
+    mark.aitb-bm-mark {
+        background: linear-gradient(180deg, rgba(255, 214, 10, 0.7), rgba(255, 159, 10, 0.6));
+        color: inherit;
+        padding: 0 2px;
+        border-radius: 3px;
+        animation: aitb-bm-mark-fade 1.8s ease-out forwards;
+    }
+    @keyframes aitb-bm-mark-fade {
+        0%   { background: rgba(255, 214, 10, 0.85); }
+        70%  { background: rgba(255, 214, 10, 0.7); }
+        100% { background: transparent; }
     }
 
     #${BOOKMARK_MENU_ID} {
