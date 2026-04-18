@@ -21,9 +21,16 @@ const SHARED_PRINT_CSS = `
         html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; color: #000 !important; }
         body { font-size: 11pt !important; }
 
-        /* Hide UI chrome that every site has */
-        button, [role="button"], [contenteditable="true"] { display: none !important; }
+        /* Hide UI chrome that every site has. Do NOT hide [contenteditable]
+           — ChatGPT wraps message prose in editable containers, so hiding
+           those blanks out the conversation body. */
+        button, [role="button"] { display: none !important; }
         nav, aside, header > *:not(main), footer { display: none !important; }
+
+        /* Force readable text color. Some sites render body text with oklch()
+           or CSS-variable-bound palettes that don't inherit cleanly when we
+           flip background/color on body. */
+        main, main *, article, article * { color: #000 !important; }
 
         /* Keep code, tables, math, and figures together when possible */
         pre, table, blockquote, figure, .katex-display, .math-block {
@@ -52,12 +59,28 @@ const SITES = {
         defaultWidth: 1200,
         printCSS: `
             @media print {
-                /* Hide side nav, header chrome, input area, suggestion chips */
+                /* Hide side nav, header chrome, input area, suggestion chips.
+                   Keep this list narrow so we don't accidentally hide actual
+                   message containers. */
                 bard-sidenav-container, mat-sidenav,
                 .input-area-container, input-area-v2,
-                bard-header, .conversation-actions,
-                .response-footer, .tools-row {
+                bard-header,
+                .response-footer, .tools-row,
+                .suggestions-container {
                     display: none !important;
+                }
+                /* Release every ancestor height/overflow so the printed output
+                   isn't clipped to a single viewport. */
+                html, body, body > *, body > * > *, body > * > * > *,
+                main, main *,
+                chat-app, chat-window, chat-window-content,
+                #chat-history, .chat-history-scroll-container,
+                infinite-scroller, .conversation-container,
+                [class*="overflow"], [class*="h-screen"], [class*="h-full"] {
+                    height: auto !important;
+                    max-height: none !important;
+                    min-height: 0 !important;
+                    overflow: visible !important;
                 }
                 /* Stretch conversation to full printable width */
                 #chat-history, .chat-history-scroll-container,
@@ -65,11 +88,12 @@ const SITES = {
                 user-query, model-response {
                     max-width: 100% !important;
                     width: 100% !important;
-                    overflow: visible !important;
-                    height: auto !important;
                 }
-                /* Unwrap overflow containers that clip content on screen */
-                main, main > * { overflow: visible !important; height: auto !important; }
+                /* Neutralize positioning that pins children to the viewport */
+                user-query, model-response, .conversation-container {
+                    position: static !important;
+                    transform: none !important;
+                }
             }
         `,
         css: `
@@ -218,15 +242,27 @@ const SITES = {
                 [data-testid="suggestions"] {
                     display: none !important;
                 }
+                /* Release every ancestor height/overflow so the printed output
+                   isn't clipped to a single viewport. */
+                html, body, body > *, body > * > *, body > * > * > *,
+                main, main *,
+                [class*="thread"], [class*="conversation"],
+                [class*="overflow"], [class*="h-screen"], [class*="h-full"],
+                [class*="min-h-"], [class*="max-h-"] {
+                    height: auto !important;
+                    max-height: none !important;
+                    min-height: 0 !important;
+                    overflow: visible !important;
+                }
                 /* Make thread area fill page; ChatGPT uses a CSS var for width */
                 main section [class*="--thread-content-max-width"] {
                     --thread-content-max-width: 100% !important;
                     max-width: 100% !important;
                 }
-                main, main > *, [class*="thread"] {
-                    overflow: visible !important;
-                    height: auto !important;
-                    max-height: none !important;
+                /* Neutralize positioning that pins message turns to viewport */
+                [data-message-author-role], [data-testid^="conversation-turn"] {
+                    position: static !important;
+                    transform: none !important;
                 }
             }
         `,
