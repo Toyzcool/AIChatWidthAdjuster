@@ -174,8 +174,22 @@ exportPdfBtn.addEventListener('click', () => {
     setExportStatus('Opening print dialog…');
     sendToActiveTab('export-pdf', (resp, err) => {
         setExportBusy(false);
-        if (err || !resp || !resp.ok) {
+        if (err) {
             setExportStatus('Reload this tab and try again.', 'error');
+            console.error('[AI Chat Width] PDF export messaging error:', err);
+            return;
+        }
+        if (!resp) {
+            setExportStatus('No response from page. Reload and retry.', 'error');
+            return;
+        }
+        if (!resp.ok) {
+            if (resp.reason === 'no-conversation') {
+                setExportStatus('No messages found. Scroll through the chat first.', 'error');
+            } else {
+                setExportStatus(`Export failed: ${resp.message || resp.reason || 'unknown'}`, 'error');
+                console.error('[AI Chat Width] PDF export error:', resp);
+            }
             return;
         }
         setExportStatus('Pick “Save as PDF” in the dialog.', 'success');

@@ -700,8 +700,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             // the print dialog. window.print() blocks the page until dismissed.
             setTimeout(() => window.print(), 50);
         } catch (e) {
+            console.error('[AI Chat Width] PDF export failed:', e);
             unmountPrintOverlay();
-            sendResponse({ ok: false, reason: 'error', message: String(e) });
+            sendResponse({ ok: false, reason: 'error', message: String(e && e.message || e) });
         }
         return true;
     }
