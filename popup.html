@@ -288,6 +288,37 @@
       font-size: 11px;
       color: var(--label-tertiary);
     }
+
+    /* Support link */
+    .support-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .support-text {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--label);
+    }
+
+    .support-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #FFFFFF;
+      background: var(--system-blue);
+      border-radius: var(--radius-pill);
+      text-decoration: none;
+      transition: background 0.15s ease, transform 0.08s ease;
+      letter-spacing: -0.01em;
+    }
+
+    .support-link:hover { background: var(--system-blue-pressed); }
+    .support-link:active { transform: scale(0.97); }
   </style>
 </head>
 <body>
@@ -353,6 +384,15 @@
       <input type="checkbox" id="wrapToggle">
       <span class="toggle-switch"></span>
     </label>
+  </div>
+
+  <div class="card">
+    <div class="support-row">
+      <span class="support-text">Enjoying this?</span>
+      <a class="support-link" href="https://paypal.me/toyzstark" target="_blank" rel="noopener noreferrer">
+        Support via PayPal
+      </a>
+    </div>
   </div>
 
   <div class="footer">Adjusts instantly. No refresh needed.</div>
