@@ -299,10 +299,11 @@ function htmlToMarkdown(root) {
 function pushText(out, text, ctx) {
     if (ctx.inPre) { out.push(text); return; }
     let s = text.replace(/\s+/g, ' ');
-    // If we're at the start of a line (previous chunk ended with a newline),
-    // drop any leading space — it's HTML formatting whitespace, not content.
+    // Drop leading whitespace whenever the previous chunk already ends in
+    // whitespace — covers both block boundaries (\n) and post-marker states
+    // like '- ', '> ', '**', so we don't end up with '-  **bold**'.
     const last = out[out.length - 1];
-    if (!last || /\n[ \t]*$/.test(last)) s = s.replace(/^\s+/, '');
+    if (!last || /\s$/.test(last)) s = s.replace(/^\s+/, '');
     if (s) out.push(s);
 }
 
