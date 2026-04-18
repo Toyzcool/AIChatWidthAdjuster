@@ -14,41 +14,88 @@ const DURATION_VAR = '--ai-chat-duration';
 const EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const DEFAULT_DURATION_MS = 420;
 
-// Shared @media print rules applied to every site on top of site-specific
-// rules. Handles page-break hints and typography that's universal.
-const SHARED_PRINT_CSS = `
+// Print mode works by cloning the site's conversation root into a full-screen
+// overlay, then using @media print to hide the original page and show only the
+// overlay. This avoids trying to selectively hide every site's chrome — we
+// just render a clean copy that has nothing but conversation content.
+const PRINT_OVERLAY_ID = 'ai-chat-print-overlay';
+
+const PRINT_OVERLAY_CSS = `
+    #${PRINT_OVERLAY_ID} {
+        display: none;
+    }
     @media print {
-        html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; color: #000 !important; }
-        body { font-size: 11pt !important; }
+        /* Hide the live page — only the overlay prints. */
+        body > *:not(#${PRINT_OVERLAY_ID}) { display: none !important; }
 
-        /* Hide UI chrome that every site has. Do NOT hide [contenteditable]
-           — ChatGPT wraps message prose in editable containers, so hiding
-           those blanks out the conversation body. */
-        button, [role="button"] { display: none !important; }
-        nav, aside, header > *:not(main), footer { display: none !important; }
+        /* Reset body so only the overlay's flow governs the printed page. */
+        html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+            color: #000 !important;
+            height: auto !important;
+            overflow: visible !important;
+        }
 
-        /* Force readable text color. Some sites render body text with oklch()
-           or CSS-variable-bound palettes that don't inherit cleanly when we
-           flip background/color on body. */
-        main, main *, article, article * { color: #000 !important; }
+        #${PRINT_OVERLAY_ID} {
+            display: block !important;
+            position: static !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            background: #fff !important;
+            color: #000 !important;
+            padding: 0 !important;
+            font-size: 11pt !important;
+        }
 
-        /* Keep code, tables, math, and figures together when possible */
-        pre, table, blockquote, figure, .katex-display, .math-block {
+        #${PRINT_OVERLAY_ID} * {
+            max-width: 100% !important;
+            max-height: none !important;
+            overflow: visible !important;
+            color: #000 !important;
+            background: transparent !important;
+        }
+
+        /* Hide any interactive chrome that the clone inherited. */
+        #${PRINT_OVERLAY_ID} button,
+        #${PRINT_OVERLAY_ID} [role="button"],
+        #${PRINT_OVERLAY_ID} [aria-hidden="true"] {
+            display: none !important;
+        }
+
+        /* Keep code, tables, math together when possible. */
+        #${PRINT_OVERLAY_ID} pre,
+        #${PRINT_OVERLAY_ID} table,
+        #${PRINT_OVERLAY_ID} blockquote,
+        #${PRINT_OVERLAY_ID} figure,
+        #${PRINT_OVERLAY_ID} .katex-display,
+        #${PRINT_OVERLAY_ID} .math-block {
             break-inside: avoid !important;
             page-break-inside: avoid !important;
         }
-        h1, h2, h3, h4 {
+        #${PRINT_OVERLAY_ID} h1, #${PRINT_OVERLAY_ID} h2,
+        #${PRINT_OVERLAY_ID} h3, #${PRINT_OVERLAY_ID} h4 {
             break-after: avoid !important;
             page-break-after: avoid !important;
         }
 
-        /* Wrap long code/math instead of clipping */
-        pre, code { white-space: pre-wrap !important; word-wrap: break-word !important; }
+        #${PRINT_OVERLAY_ID} pre,
+        #${PRINT_OVERLAY_ID} code {
+            white-space: pre-wrap !important;
+            word-wrap: break-word !important;
+        }
 
-        /* Links: show URL after text for printed archive */
-        a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 9pt; color: #555; }
+        #${PRINT_OVERLAY_ID} a[href^="http"]::after {
+            content: " (" attr(href) ")";
+            font-size: 9pt;
+            color: #555 !important;
+        }
 
-        img { max-width: 100% !important; height: auto !important; }
+        #${PRINT_OVERLAY_ID} img { max-width: 100% !important; height: auto !important; }
     }
 `;
 
@@ -57,45 +104,10 @@ const SITES = {
         match: (host) => host.includes('gemini.google.com'),
         storageKey: 'geminiWidth',
         defaultWidth: 1200,
-        printCSS: `
-            @media print {
-                /* Hide side nav, header chrome, input area, suggestion chips.
-                   Keep this list narrow so we don't accidentally hide actual
-                   message containers. */
-                bard-sidenav-container, mat-sidenav,
-                .input-area-container, input-area-v2,
-                bard-header,
-                .response-footer, .tools-row,
-                .suggestions-container {
-                    display: none !important;
-                }
-                /* Release every ancestor height/overflow so the printed output
-                   isn't clipped to a single viewport. */
-                html, body, body > *, body > * > *, body > * > * > *,
-                main, main *,
-                chat-app, chat-window, chat-window-content,
-                #chat-history, .chat-history-scroll-container,
-                infinite-scroller, .conversation-container,
-                [class*="overflow"], [class*="h-screen"], [class*="h-full"] {
-                    height: auto !important;
-                    max-height: none !important;
-                    min-height: 0 !important;
-                    overflow: visible !important;
-                }
-                /* Stretch conversation to full printable width */
-                #chat-history, .chat-history-scroll-container,
-                infinite-scroller, .conversation-container,
-                user-query, model-response {
-                    max-width: 100% !important;
-                    width: 100% !important;
-                }
-                /* Neutralize positioning that pins children to the viewport */
-                user-query, model-response, .conversation-container {
-                    position: static !important;
-                    transform: none !important;
-                }
-            }
-        `,
+        getPrintRoot: () =>
+            document.querySelector('#chat-history') ||
+            document.querySelector('infinite-scroller') ||
+            document.querySelector('.chat-history-scroll-container'),
         css: `
             .conversation-container,
             main > div:has(.conversation-container),
@@ -161,46 +173,7 @@ const SITES = {
         match: (host) => host.includes('claude.ai'),
         storageKey: 'claudeWidth',
         defaultWidth: 1000,
-        printCSS: `
-            @media print {
-                /* Hide side nav, top bar, composer, and project panels */
-                [data-chat-input-container="true"],
-                [data-testid="chat-menu-trigger"],
-                header, nav,
-                [class*="sidebar"], [class*="nav-"],
-                [data-testid*="navigation"] {
-                    display: none !important;
-                }
-                /* Release every ancestor height/overflow constraint. Claude's
-                   scroll area sits several divs deep under body with each
-                   ancestor clipping to viewport height — without this release
-                   the print captures only one screen. */
-                html, body, body > *, body > * > *, body > * > * > *,
-                main, main *,
-                [data-autoscroll-container="true"],
-                [data-autoscroll-container="true"] *,
-                [class*="overflow"], [class*="h-screen"], [class*="h-full"],
-                [class*="min-h-"], [class*="max-h-"] {
-                    height: auto !important;
-                    max-height: none !important;
-                    min-height: 0 !important;
-                    overflow: visible !important;
-                }
-                /* Conversation column fills the page */
-                [data-autoscroll-container="true"],
-                [data-autoscroll-container="true"] .max-w-3xl {
-                    max-width: 100% !important;
-                    width: 100% !important;
-                }
-                /* Neutralize any fixed/absolute positioning that pins elements
-                   to the viewport and truncates them at the page edge. */
-                [data-autoscroll-container="true"],
-                [data-autoscroll-container="true"] * {
-                    position: static !important;
-                    transform: none !important;
-                }
-            }
-        `,
+        getPrintRoot: () => document.querySelector('[data-autoscroll-container="true"]'),
         css: `
             /* Claude layout is constrained by Tailwind's max-w-3xl (768px).
                Widen messages… */
@@ -232,40 +205,12 @@ const SITES = {
         match: (host) => host.includes('chatgpt.com') || host.includes('chat.openai.com'),
         storageKey: 'chatgptWidth',
         defaultWidth: 1000,
-        printCSS: `
-            @media print {
-                /* Hide side nav, top header, composer, suggestion chips */
-                #stage-slideover-sidebar, #side-nav,
-                aside, header,
-                form[data-type="unified-composer"],
-                [data-testid="composer-root"],
-                [data-testid="suggestions"] {
-                    display: none !important;
-                }
-                /* Release every ancestor height/overflow so the printed output
-                   isn't clipped to a single viewport. */
-                html, body, body > *, body > * > *, body > * > * > *,
-                main, main *,
-                [class*="thread"], [class*="conversation"],
-                [class*="overflow"], [class*="h-screen"], [class*="h-full"],
-                [class*="min-h-"], [class*="max-h-"] {
-                    height: auto !important;
-                    max-height: none !important;
-                    min-height: 0 !important;
-                    overflow: visible !important;
-                }
-                /* Make thread area fill page; ChatGPT uses a CSS var for width */
-                main section [class*="--thread-content-max-width"] {
-                    --thread-content-max-width: 100% !important;
-                    max-width: 100% !important;
-                }
-                /* Neutralize positioning that pins message turns to viewport */
-                [data-message-author-role], [data-testid^="conversation-turn"] {
-                    position: static !important;
-                    transform: none !important;
-                }
-            }
-        `,
+        // ChatGPT's message turns live directly under <main> in a scrolled
+        // container; cloning the nearest common ancestor gives us every turn.
+        getPrintRoot: () =>
+            document.querySelector('main [class*="conversation"]') ||
+            document.querySelector('main div[class*="thread"]') ||
+            document.querySelector('main'),
         css: `
             /* ChatGPT drives both column and composer through --thread-content-max-width.
                Scoping to <section> restricts the override to message turns, keeping
@@ -342,7 +287,7 @@ const site = detectSite();
 if (site) {
     ensureStyle(STYLE_WIDTH_ID, buildSiteCSS(site));
     // Print rules are always-injected but dormant outside @media print.
-    ensureStyle(STYLE_PRINT_ID, (site.printCSS || '') + SHARED_PRINT_CSS);
+    ensureStyle(STYLE_PRINT_ID, PRINT_OVERLAY_CSS);
 
     const applyWidth = (width) => {
         const px = `${Number(width) || site.defaultWidth}px`;
@@ -709,17 +654,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg?.type === 'export-pdf') {
-        // The @media print rules are already injected, so simply triggering
-        // the browser's print dialog produces a clean printable view. User
-        // picks 'Save as PDF' from the destination dropdown.
         try {
-            // Respond before opening the dialog — window.print() blocks in some
-            // Chrome builds and the popup is waiting on the callback.
+            const root = site.getPrintRoot && site.getPrintRoot();
+            if (!root) {
+                sendResponse({ ok: false, reason: 'no-conversation' });
+                return true;
+            }
+            mountPrintOverlay(root);
             sendResponse({ ok: true });
+            // Give the browser a beat to lay out the overlay before opening
+            // the print dialog. window.print() blocks the page until dismissed.
             setTimeout(() => window.print(), 50);
         } catch (e) {
+            unmountPrintOverlay();
             sendResponse({ ok: false, reason: 'error', message: String(e) });
         }
         return true;
     }
 });
+
+function mountPrintOverlay(root) {
+    unmountPrintOverlay();
+    const overlay = document.createElement('div');
+    overlay.id = PRINT_OVERLAY_ID;
+    // Clone the rendered conversation subtree — this preserves KaTeX, tables,
+    // code highlighting, and images exactly as they look on screen.
+    overlay.appendChild(root.cloneNode(true));
+    document.body.appendChild(overlay);
+
+    // Remove the overlay once the print dialog is dismissed (either saved or
+    // cancelled). Fallback timer in case afterprint doesn't fire (some Chrome
+    // builds skip it when the dialog is closed quickly).
+    const cleanup = () => {
+        window.removeEventListener('afterprint', cleanup);
+        unmountPrintOverlay();
+    };
+    window.addEventListener('afterprint', cleanup);
+    setTimeout(cleanup, 60000);
+}
+
+function unmountPrintOverlay() {
+    const existing = document.getElementById(PRINT_OVERLAY_ID);
+    if (existing) existing.remove();
+}
