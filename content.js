@@ -241,18 +241,17 @@ const SITES = {
             if (!turns.length) return null;
             const wrapper = document.createElement('div');
             wrapper.setAttribute('data-ai-chat-print-root', 'chatgpt');
-            // Classes we must preserve to keep rendering readable: KaTeX math
-            // positions via .katex-* classes, and some code highlight tokens.
-            // Everything else gets stripped so ChatGPT's Tailwind-prose rules
-            // (which bind text color to CSS variables set on ancestors) can't
-            // render paragraphs invisible once detached from the live DOM.
-            const PRESERVE_CLASS = /^(katex|hljs|language-|token)/;
+            // Rebuild each turn from scratch — iterate the live DOM and emit
+            // new elements that carry only structural tags and text. This
+            // severs every possible style inheritance chain (Tailwind prose
+            // variables, oklch color palettes, gradient text tricks) that has
+            // been making paragraphs render invisible in earlier attempts.
             for (const turn of turns) {
-                const clone = turn.cloneNode(true);
+                const clean = sanitizeToPrintable(turn);
+                if (!clean) continue;
                 const role = turn.getAttribute('data-message-author-role') || '';
-                clone.setAttribute('data-role', role);
-                stripStyling(clone, PRESERVE_CLASS);
-                wrapper.appendChild(clone);
+                clean.setAttribute('data-role', role);
+                wrapper.appendChild(clean);
             }
             return wrapper;
         },
@@ -719,27 +718,69 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 });
 
-// Walk a cloned subtree and strip all classes/inline-styles except those
-// matching the preservePattern. Used by ChatGPT's getPrintRoot to detach
-// cloned turns from Tailwind-prose and ChatGPT's CSS-variable theme so the
-// overlay's own reset CSS has full control over text rendering.
-function stripStyling(root, preservePattern) {
-    const walk = (el) => {
-        if (el.nodeType !== 1) return;
-        // Use getAttribute instead of .className — SVG elements (KaTeX emits
-        // them) expose className as a SVGAnimatedString, not a plain string.
-        const classAttr = el.getAttribute('class');
-        if (classAttr) {
-            const keep = classAttr.split(/\s+/).filter(c => c && preservePattern.test(c));
-            if (keep.length) el.setAttribute('class', keep.join(' '));
-            else el.removeAttribute('class');
-        }
-        el.removeAttribute('style');
-        // These ChatGPT-specific attributes can also carry theming hooks.
-        el.removeAttribute('data-color-mode');
-        for (const child of el.children) walk(child);
-    };
-    walk(root);
+// Rebuild a printable DOM tree by walking the source and emitting only
+// structural tags/text. This is much more aggressive than strip-classes:
+// the output element NEVER carries any class or style attribute and lives
+// in its own fresh DOM, so no page CSS (Tailwind prose, oklch palettes,
+// -webkit-text-fill-color gradients, CSS custom-property theming) can
+// follow it into the print overlay.
+//
+// Preserves: block/flow tags, lists, tables, code, inline emphasis,
+// links (href), images (src/alt). Everything else becomes a plain <div>.
+const PRINTABLE_TAGS = new Set([
+    'DIV', 'P', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER',
+    'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'UL', 'OL', 'LI', 'BLOCKQUOTE',
+    'CODE', 'PRE', 'KBD', 'SAMP',
+    'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TD', 'TH', 'CAPTION',
+    'STRONG', 'B', 'EM', 'I', 'U', 'DEL', 'S', 'MARK', 'SUB', 'SUP',
+    'BR', 'HR', 'A', 'SPAN', 'IMG',
+    // KaTeX-rendered math (MathML + SVG visuals):
+    'MATH', 'SEMANTICS', 'MROW', 'MI', 'MN', 'MO', 'MFRAC', 'MSUP',
+    'MSUB', 'MSQRT', 'MTEXT', 'ANNOTATION',
+    'SVG', 'G', 'PATH', 'LINE', 'RECT', 'CIRCLE', 'TEXT', 'TSPAN',
+]);
+
+function sanitizeToPrintable(src) {
+    if (!src) return null;
+    if (src.nodeType === 3) { // text node
+        const text = src.nodeValue;
+        return text ? document.createTextNode(text) : null;
+    }
+    if (src.nodeType !== 1) return null;
+    const tag = src.tagName;
+    // Skip elements that are decorative chrome.
+    if (tag === 'BUTTON' || src.getAttribute('role') === 'button') return null;
+    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return null;
+
+    const outTag = PRINTABLE_TAGS.has(tag) ? tag.toLowerCase() : 'div';
+    const out = document.createElement(outTag);
+
+    // Preserve a small set of meaningful attributes only.
+    if (tag === 'A') {
+        const href = src.getAttribute('href');
+        if (href) out.setAttribute('href', href);
+    } else if (tag === 'IMG') {
+        const s = src.getAttribute('src');
+        const a = src.getAttribute('alt');
+        if (s) out.setAttribute('src', s);
+        if (a) out.setAttribute('alt', a);
+    } else if (tag === 'TD' || tag === 'TH') {
+        const cs = src.getAttribute('colspan');
+        const rs = src.getAttribute('rowspan');
+        if (cs) out.setAttribute('colspan', cs);
+        if (rs) out.setAttribute('rowspan', rs);
+    }
+
+    for (const child of src.childNodes) {
+        const clean = sanitizeToPrintable(child);
+        if (clean) out.appendChild(clean);
+    }
+    // Drop wrapper elements that ended up empty (e.g. icon-only buttons).
+    if (!out.childNodes.length && outTag !== 'br' && outTag !== 'hr' && outTag !== 'img') {
+        return null;
+    }
+    return out;
 }
 
 function mountPrintOverlay(root) {
