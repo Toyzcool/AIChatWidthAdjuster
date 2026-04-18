@@ -889,6 +889,40 @@ const BOOKMARKS_PANEL_ID = 'ai-toolbox-bookmarks-panel';
 const BOOKMARKS_STATE_KEY = 'bookmarksPanelCollapsed';
 const BOOKMARKS_STORAGE_PREFIX = 'bookmarks:';
 
+// Both ChatGPT and Claude toggle dark mode by adding a `dark` class to the
+// <html> element. We mirror that onto our panel + bubble via a data attribute
+// so our styles can follow the host theme instead of the OS-level
+// prefers-color-scheme, which drifts when the user overrides the site theme.
+const THEME_ATTR = 'data-aitb-theme';
+
+function detectHostTheme() {
+    const root = document.documentElement;
+    if (root.classList.contains('dark')) return 'dark';
+    if (root.classList.contains('light')) return 'light';
+    // Some layouts set a data-theme attribute instead.
+    const dataTheme = root.getAttribute('data-theme');
+    if (dataTheme === 'dark' || dataTheme === 'light') return dataTheme;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyHostTheme() {
+    const theme = detectHostTheme();
+    const panel = document.getElementById(BOOKMARKS_PANEL_ID);
+    if (panel) panel.setAttribute(THEME_ATTR, theme);
+    const bubble = document.getElementById(SELECTION_BUBBLE_ID);
+    if (bubble) bubble.setAttribute(THEME_ATTR, theme);
+}
+
+function watchHostTheme() {
+    applyHostTheme();
+    const observer = new MutationObserver(applyHostTheme);
+    observer.observe(document.documentElement, {
+        attributes: true, attributeFilter: ['class', 'data-theme'],
+    });
+    // OS-level fallback keeps working when the host doesn't drive theme.
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyHostTheme);
+}
+
 // Per-site adapters for bookmarking. Each adapter encapsulates everything the
 // bookmark engine needs to know about the host page's DOM: how to extract a
 // conversation identifier from the URL, how to enumerate messages, how to
@@ -1071,6 +1105,7 @@ function mountBookmarksPanel() {
 
     attachSelectionBubble();
     pruneNonSelectionBookmarks();
+    watchHostTheme();
 }
 
 // Delegate to the site adapter so each host's per-message container selector
@@ -1148,6 +1183,9 @@ function renderSelectionBubble(range, msgEl, text) {
         // before the click handler fires.
         bubble.addEventListener('mousedown', (e) => e.preventDefault());
         document.body.appendChild(bubble);
+        // Apply the current host theme immediately so the first paint is
+        // correct — the MutationObserver only catches subsequent changes.
+        applyHostTheme();
     }
     // Re-bind the click each render so we capture the current {msgEl, text}.
     bubble.onclick = async () => {
@@ -1643,44 +1681,49 @@ const BOOKMARKS_CSS = `
     }
     #${SELECTION_BUBBLE_ID}:hover { background: #000000; }
     #${SELECTION_BUBBLE_ID}:active { opacity: 0.85; }
+    /* Pure opacity fade — the earlier scale/translate felt jumpy now that we
+       reposition below the selection. Slightly longer duration + ease-out
+       gives the bubble a softer settle without visual drift. */
     @keyframes aitb-bubble-in {
-        from { opacity: 0; transform: translateY(4px) scale(0.96); }
-        to { opacity: 1; transform: translateY(0) scale(1); }
+        from { opacity: 0; }
+        to   { opacity: 1; }
     }
-    @media (prefers-color-scheme: dark) {
-        #${SELECTION_BUBBLE_ID} {
-            background: #f5f5f7;
-            color: #1d1d1f;
-        }
-        #${SELECTION_BUBBLE_ID}:hover { background: #ffffff; }
+    #${SELECTION_BUBBLE_ID} {
+        animation-duration: 0.22s;
     }
 
-    @media (prefers-color-scheme: dark) {
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle {
-            background: rgba(44, 44, 46, 0.9);
-            color: rgba(255, 255, 255, 0.92);
-        }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-body {
-            background: rgba(28, 28, 30, 0.96);
-            border-left-color: rgba(255, 255, 255, 0.08);
-        }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-title { color: rgba(255, 255, 255, 0.95); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-header { border-bottom-color: rgba(255, 255, 255, 0.08); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse { color: rgba(235, 235, 245, 0.5); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse:hover { background: rgba(255, 255, 255, 0.06); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-empty { color: rgba(235, 235, 245, 0.45); }
+    /* Host-driven dark mode — activated by the data-aitb-theme attribute we
+       mirror from <html class="dark"> via MutationObserver. */
+    #${SELECTION_BUBBLE_ID}[${THEME_ATTR}="dark"] {
+        background: #f5f5f7;
+        color: #1d1d1f;
+    }
+    #${SELECTION_BUBBLE_ID}[${THEME_ATTR}="dark"]:hover { background: #ffffff; }
 
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-item { background: rgba(255, 255, 255, 0.04); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover { background: rgba(255, 255, 255, 0.08); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role { color: rgba(235, 235, 245, 0.45); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-act { color: rgba(235, 235, 245, 0.55); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-act:hover { background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.95); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-item-body { color: rgba(255, 255, 255, 0.92); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-note {
-            color: rgba(235, 235, 245, 0.72);
-            background: rgba(10, 132, 255, 0.14);
-            border-left-color: rgba(10, 132, 255, 0.5);
-        }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-toggle {
+        background: rgba(44, 44, 46, 0.9);
+        color: rgba(255, 255, 255, 0.92);
+    }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-body {
+        background: rgba(28, 28, 30, 0.96);
+        border-left-color: rgba(255, 255, 255, 0.08);
+    }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-title { color: rgba(255, 255, 255, 0.95); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-header { border-bottom-color: rgba(255, 255, 255, 0.08); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-collapse { color: rgba(235, 235, 245, 0.5); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-collapse:hover { background: rgba(255, 255, 255, 0.06); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-empty { color: rgba(235, 235, 245, 0.45); }
+
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-item { background: rgba(255, 255, 255, 0.04); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-item:hover { background: rgba(255, 255, 255, 0.08); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-item-role { color: rgba(235, 235, 245, 0.45); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-act { color: rgba(235, 235, 245, 0.55); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-act:hover { background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.95); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-item-body { color: rgba(255, 255, 255, 0.92); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-note {
+        color: rgba(235, 235, 245, 0.72);
+        background: rgba(10, 132, 255, 0.14);
+        border-left-color: rgba(10, 132, 255, 0.5);
     }
 `;
 
