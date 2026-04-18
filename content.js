@@ -888,9 +888,61 @@ function unmountPrintOverlay() {
 const BOOKMARKS_PANEL_ID = 'ai-toolbox-bookmarks-panel';
 const BOOKMARKS_STATE_KEY = 'bookmarksPanelCollapsed';
 const BOOKMARKS_SUPPORTED_SITES = new Set(['chatgptWidth']);
+const BOOKMARKS_STORAGE_PREFIX = 'bookmarks:';
 
 function bookmarksSupportedForCurrentSite() {
     return !!site && BOOKMARKS_SUPPORTED_SITES.has(site.storageKey);
+}
+
+// Extract the conversation identifier the active site exposes in the URL.
+// ChatGPT uses /c/{uuid}; a brand-new conversation without an id yet returns
+// null, which the panel treats as "no bookmarks storage available yet".
+function getConversationId() {
+    if (!site) return null;
+    if (site.storageKey === 'chatgptWidth') {
+        const m = location.pathname.match(/^\/c\/([0-9a-f-]+)/i);
+        return m ? m[1] : null;
+    }
+    return null;
+}
+
+function bookmarksStorageKey(convId) {
+    return `${BOOKMARKS_STORAGE_PREFIX}${convId}`;
+}
+
+function loadBookmarks(convId, cb) {
+    if (!convId) { cb([]); return; }
+    const key = bookmarksStorageKey(convId);
+    chrome.storage.local.get(key, (r) => cb(Array.isArray(r[key]) ? r[key] : []));
+}
+
+function saveBookmarks(convId, list) {
+    if (!convId) return;
+    chrome.storage.local.set({ [bookmarksStorageKey(convId)]: list });
+}
+
+// SPA route watcher — ChatGPT, Claude, and Gemini all mutate history
+// programmatically rather than reloading. We patch pushState/replaceState to
+// dispatch a synthetic event, plus listen for popstate, then coalesce both
+// into a single onUrlChange callback.
+function onUrlChange(cb) {
+    let last = location.href;
+    const fire = () => {
+        if (location.href === last) return;
+        last = location.href;
+        cb();
+    };
+    const wrap = (name) => {
+        const orig = history[name];
+        history[name] = function () {
+            const ret = orig.apply(this, arguments);
+            setTimeout(fire, 0);
+            return ret;
+        };
+    };
+    wrap('pushState');
+    wrap('replaceState');
+    window.addEventListener('popstate', fire);
 }
 
 function mountBookmarksPanel() {
@@ -933,6 +985,63 @@ function mountBookmarksPanel() {
     chrome.storage.local.get(BOOKMARKS_STATE_KEY, (r) => {
         setPanelCollapsed(r[BOOKMARKS_STATE_KEY] !== false);
     });
+
+    refreshBookmarkList();
+    onUrlChange(refreshBookmarkList);
+
+    // Storage-level updates from another tab or future in-page writes should
+    // re-render immediately so bookmarks stay in sync without a manual reload.
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local') return;
+        const convId = getConversationId();
+        if (convId && changes[bookmarksStorageKey(convId)]) refreshBookmarkList();
+    });
+}
+
+function refreshBookmarkList() {
+    const panel = document.getElementById(BOOKMARKS_PANEL_ID);
+    if (!panel) return;
+    const list = panel.querySelector('.aitb-bm-list');
+    if (!list) return;
+
+    const convId = getConversationId();
+    if (!convId) {
+        list.innerHTML = `
+            <div class="aitb-bm-empty">
+                Start or open a conversation to begin bookmarking.
+            </div>`;
+        return;
+    }
+
+    loadBookmarks(convId, (bookmarks) => {
+        if (!bookmarks.length) {
+            list.innerHTML = `
+                <div class="aitb-bm-empty">
+                    No bookmarks yet. Select text or right-click a message to add one.
+                </div>`;
+            return;
+        }
+        list.innerHTML = bookmarks.map(renderBookmarkItem).join('');
+    });
+}
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+}
+
+function renderBookmarkItem(bm) {
+    const body = bm.selection?.text || bm.snippet || '';
+    const note = bm.note ? `<div class="aitb-bm-note">${escapeHtml(bm.note)}</div>` : '';
+    const roleLabel = bm.role === 'assistant' ? 'Assistant' : 'User';
+    return `
+        <div class="aitb-bm-item" data-id="${escapeHtml(bm.id)}">
+            <div class="aitb-bm-item-role" data-role="${escapeHtml(bm.role)}">${roleLabel}</div>
+            <div class="aitb-bm-item-body">${escapeHtml(body)}</div>
+            ${note}
+        </div>
+    `;
 }
 
 function isPanelCollapsed() {
@@ -1046,6 +1155,46 @@ const BOOKMARKS_CSS = `
         line-height: 1.5;
     }
 
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item {
+        padding: 10px 12px;
+        margin-bottom: 6px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.03);
+        cursor: pointer;
+        transition: background 0.12s ease;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover { background: rgba(0, 0, 0, 0.06); }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(60, 60, 67, 0.55);
+        margin-bottom: 4px;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role[data-role="assistant"] { color: #AF52DE; }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role[data-role="user"] { color: #007AFF; }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-item-body {
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: #1d1d1f;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-note {
+        margin-top: 6px;
+        padding: 4px 8px;
+        font-size: 11.5px;
+        color: rgba(60, 60, 67, 0.7);
+        background: rgba(0, 122, 255, 0.08);
+        border-radius: 6px;
+        border-left: 2px solid rgba(0, 122, 255, 0.4);
+    }
+
     @media (prefers-color-scheme: dark) {
         #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle {
             background: rgba(44, 44, 46, 0.9);
@@ -1060,6 +1209,16 @@ const BOOKMARKS_CSS = `
         #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse { color: rgba(235, 235, 245, 0.5); }
         #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse:hover { background: rgba(255, 255, 255, 0.06); }
         #${BOOKMARKS_PANEL_ID} .aitb-bm-empty { color: rgba(235, 235, 245, 0.45); }
+
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-item { background: rgba(255, 255, 255, 0.04); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover { background: rgba(255, 255, 255, 0.08); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role { color: rgba(235, 235, 245, 0.45); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-item-body { color: rgba(255, 255, 255, 0.92); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-note {
+            color: rgba(235, 235, 245, 0.72);
+            background: rgba(10, 132, 255, 0.14);
+            border-left-color: rgba(10, 132, 255, 0.5);
+        }
     }
 `;
 
