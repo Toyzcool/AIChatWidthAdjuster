@@ -26,8 +26,13 @@
       --thumb-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 3px 8px rgba(0, 0, 0, 0.15), 0 1px 1px rgba(0, 0, 0, 0.16);
       --active-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 3px 8px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
 
-      --radius-card: 14px;
-      --radius-control: 9px;
+      /* Corner radii follow Apple's nested-corner convention: outer surfaces
+         use bigger radii, children stay slightly smaller so their edges sit
+         concentric to the parent card. */
+      --radius-window: 16px;
+      --radius-card: 16px;
+      --radius-control: 12px;
+      --radius-small: 10px;
       --radius-pill: 999px;
     }
 
@@ -60,12 +65,16 @@
     body {
       width: 320px;
       margin: 0;
-      padding: 18px 16px 14px;
+      padding: 16px 14px 12px;
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
       font-size: 13px;
       background: var(--bg);
       color: var(--label);
       letter-spacing: -0.01em;
+      /* Rounds the inner popup surface so the content area mirrors the window
+         chrome radius on macOS / iOS-style popovers. */
+      border-radius: var(--radius-window);
+      overflow: hidden;
     }
 
     /* Header */
@@ -112,7 +121,7 @@
       font-size: 13px;
       font-weight: 500;
       font-family: inherit;
-      border-radius: 7px;
+      border-radius: var(--radius-small);
       cursor: pointer;
       transition: background 0.15s ease, transform 0.08s ease;
       letter-spacing: -0.01em;
@@ -213,7 +222,7 @@
       font-weight: 500;
       font-family: inherit;
       font-variant-numeric: tabular-nums;
-      border-radius: 7px;
+      border-radius: var(--radius-small);
       cursor: pointer;
       transition: background 0.15s ease, transform 0.08s ease;
       letter-spacing: -0.01em;
@@ -306,7 +315,7 @@
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      padding: 6px 12px;
+      padding: 7px 14px;
       font-size: 12px;
       font-weight: 600;
       color: #FFFFFF;
@@ -323,7 +332,7 @@
     /* Export */
     .export-btn {
       width: 100%;
-      padding: 9px 0;
+      padding: 11px 0;
       background: var(--system-blue);
       color: #FFFFFF;
       border: none;
@@ -342,7 +351,7 @@
     .export-btn.secondary {
       background: var(--fill-tertiary);
       color: var(--label);
-      margin-top: 6px;
+      margin-top: 8px;
     }
     .export-btn.secondary:hover:not(:disabled) { background: var(--fill-quaternary); }
     @media (prefers-color-scheme: dark) {
