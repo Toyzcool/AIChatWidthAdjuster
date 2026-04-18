@@ -60,12 +60,17 @@ const PRINT_OVERLAY_CSS = `
             background: transparent !important;
         }
 
-        /* Hide any interactive chrome that the clone inherited. */
+        /* Hide any interactive chrome that the clone inherited. Do NOT hide
+           [aria-hidden="true"] — KaTeX's visually-rendered formula tree is
+           marked aria-hidden (the accessible copy is in .katex-mathml), so
+           hiding it would erase every math expression from the PDF. */
         #${PRINT_OVERLAY_ID} button,
-        #${PRINT_OVERLAY_ID} [role="button"],
-        #${PRINT_OVERLAY_ID} [aria-hidden="true"] {
+        #${PRINT_OVERLAY_ID} [role="button"] {
             display: none !important;
         }
+        /* Hide the redundant MathML tree so we don't print the formula twice
+           once we're letting the visual katex-html render. */
+        #${PRINT_OVERLAY_ID} .katex-mathml { display: none !important; }
 
         /* Keep code, tables, math together when possible. */
         #${PRINT_OVERLAY_ID} pre,
@@ -225,11 +230,17 @@ const SITES = {
             if (!turns.length) return null;
             const wrapper = document.createElement('div');
             wrapper.setAttribute('data-ai-chat-print-root', 'chatgpt');
+            // Classes we must preserve to keep rendering readable: KaTeX math
+            // positions via .katex-* classes, and some code highlight tokens.
+            // Everything else gets stripped so ChatGPT's Tailwind-prose rules
+            // (which bind text color to CSS variables set on ancestors) can't
+            // render paragraphs invisible once detached from the live DOM.
+            const PRESERVE_CLASS = /^(katex|hljs|language-|token)/;
             for (const turn of turns) {
                 const clone = turn.cloneNode(true);
-                // Label the role so per-turn spacing CSS can target it.
                 const role = turn.getAttribute('data-message-author-role') || '';
                 clone.setAttribute('data-role', role);
+                stripStyling(clone, PRESERVE_CLASS);
                 wrapper.appendChild(clone);
             }
             return wrapper;
@@ -695,6 +706,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return true;
     }
 });
+
+// Walk a cloned subtree and strip all classes/inline-styles except those
+// matching the preservePattern. Used by ChatGPT's getPrintRoot to detach
+// cloned turns from Tailwind-prose and ChatGPT's CSS-variable theme so the
+// overlay's own reset CSS has full control over text rendering.
+function stripStyling(root, preservePattern) {
+    const walk = (el) => {
+        if (el.nodeType !== 1) return;
+        if (el.hasAttribute('class')) {
+            const keep = el.className.split(/\s+/).filter(c => preservePattern.test(c));
+            if (keep.length) el.setAttribute('class', keep.join(' '));
+            else el.removeAttribute('class');
+        }
+        el.removeAttribute('style');
+        // These ChatGPT-specific attributes can also carry theming hooks.
+        el.removeAttribute('data-color-mode');
+        for (const child of el.children) walk(child);
+    };
+    walk(root);
+}
 
 function mountPrintOverlay(root) {
     unmountPrintOverlay();
