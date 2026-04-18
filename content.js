@@ -1140,14 +1140,17 @@ function scrollToBookmark(bm) {
         // lazy-load before giving up.
         return;
     }
-    msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
     const targetText = bm.selection?.text;
     const wanted = targetText ? targetText.toLowerCase() : '';
     if (!wanted) {
+        // Whole-message bookmarks land at the top of the answer so the user
+        // reads from the beginning; selection bookmarks get centered later
+        // around the matched range instead.
+        msgEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
         flashHighlight(msgEl);
         return;
     }
+    msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
     // Build the concatenated innerText and a mapping back to the underlying
     // text nodes so we can construct a Range once we find the substring.
