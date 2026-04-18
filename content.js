@@ -424,19 +424,41 @@ function walkChildren(node, out, ctx) {
 }
 
 function tryExtractMath(el) {
-    const classes = el.className || '';
     const tag = el.tagName.toLowerCase();
-    const isKatex = typeof classes === 'string' && /(^|\s)katex(\s|$)/.test(classes);
+    const classes = typeof el.className === 'string' ? el.className : '';
+    const hasDataMath = el.hasAttribute && el.hasAttribute('data-math');
+    const isKatex = /(^|\s)katex(\s|$)/.test(classes);
     const isMathML = tag === 'math';
-    const isMathJax = typeof classes === 'string' && /MathJax/.test(classes);
-    if (!isKatex && !isMathML && !isMathJax) return null;
-    // Only act at the outermost wrapper to avoid emitting the formula twice.
-    // If an ancestor is already a math wrapper, defer to it.
-    if (el.parentElement && el.parentElement.closest('.katex, .MathJax, math')) return null;
-    const annotation = el.querySelector('annotation[encoding="application/x-tex"], annotation');
-    const tex = (annotation ? annotation.textContent : '').trim();
+    const isMathJax = /MathJax/.test(classes);
+    const isMathBlock = /(^|\s)math-block(\s|$)/.test(classes);
+    if (!hasDataMath && !isKatex && !isMathML && !isMathJax && !isMathBlock) return null;
+
+    // Only act at the outermost math wrapper to avoid emitting the formula
+    // twice when walk recurses into nested .katex-display > .katex etc.
+    if (el.parentElement && el.parentElement.closest('[data-math], .math-block, .katex, .MathJax, math')) {
+        return ''; // suppress children; outer call already handled it
+    }
+
+    // Preferred sources, in order:
+    //   1. data-math attribute on self (Gemini's div.math-block)
+    //   2. data-math attribute on a descendant (rare)
+    //   3. <annotation> element (standard KaTeX/MathJax with MathML)
+    let tex = '';
+    if (hasDataMath) tex = (el.getAttribute('data-math') || '').trim();
+    if (!tex) {
+        const inner = el.querySelector('[data-math]');
+        if (inner) tex = (inner.getAttribute('data-math') || '').trim();
+    }
+    if (!tex) {
+        const annotation = el.querySelector('annotation[encoding="application/x-tex"], annotation');
+        if (annotation) tex = annotation.textContent.trim();
+    }
     if (!tex) return '';
-    const isDisplay = !!(el.closest && el.closest('.katex-display, .MathJax_Display'));
+
+    const isDisplay = isMathBlock
+        || classes.includes('katex-display')
+        || !!(el.closest && el.closest('.katex-display, .MathJax_Display, .math-block'))
+        || !!el.querySelector('.katex-display, .MathJax_Display');
     return isDisplay ? `\n\n$$${tex}$$\n\n` : `$${tex}$`;
 }
 
