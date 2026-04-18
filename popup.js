@@ -118,9 +118,10 @@ wrapToggle.addEventListener('change', () => {
     chrome.storage.local.set({ codeAutoWrap: wrapToggle.checked });
 });
 
-// Export: ask the active tab's content script to build the MD and trigger
-// the download in-page (content script has direct DOM + blob URL access).
-const exportBtn = document.getElementById('exportMdBtn');
+// Export: ask the active tab's content script to build the output and
+// trigger the action in-page (download for MD, print dialog for PDF).
+const exportMdBtn = document.getElementById('exportMdBtn');
+const exportPdfBtn = document.getElementById('exportPdfBtn');
 const exportStatus = document.getElementById('exportStatus');
 
 function setExportStatus(text, kind) {
@@ -129,31 +130,57 @@ function setExportStatus(text, kind) {
     exportStatus.classList.toggle('success', kind === 'success');
 }
 
-exportBtn.addEventListener('click', () => {
-    exportBtn.disabled = true;
-    setExportStatus('Exporting…');
+function setExportBusy(busy) {
+    exportMdBtn.disabled = busy;
+    exportPdfBtn.disabled = busy;
+}
+
+function sendToActiveTab(type, onResponse) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const tab = tabs[0];
         if (!tab) {
-            exportBtn.disabled = false;
+            setExportBusy(false);
             setExportStatus('No active tab.', 'error');
             return;
         }
-        chrome.tabs.sendMessage(tab.id, { type: 'export-markdown' }, (resp) => {
-            exportBtn.disabled = false;
-            if (chrome.runtime.lastError || !resp) {
-                setExportStatus('Reload the Claude tab and try again.', 'error');
-                return;
-            }
-            if (resp.ok) {
-                setExportStatus('Downloaded.', 'success');
-                setTimeout(() => setExportStatus(''), 2500);
-            } else if (resp.reason === 'no-conversation') {
-                setExportStatus('No conversation found on this page.', 'error');
-            } else {
-                setExportStatus('Export failed.', 'error');
-            }
+        chrome.tabs.sendMessage(tab.id, { type }, (resp) => {
+            onResponse(resp, chrome.runtime.lastError);
         });
+    });
+}
+
+exportMdBtn.addEventListener('click', () => {
+    setExportBusy(true);
+    setExportStatus('Exporting…');
+    sendToActiveTab('export-markdown', (resp, err) => {
+        setExportBusy(false);
+        if (err || !resp) {
+            setExportStatus('Reload this tab and try again.', 'error');
+            return;
+        }
+        if (resp.ok) {
+            setExportStatus('Downloaded.', 'success');
+            setTimeout(() => setExportStatus(''), 2500);
+        } else if (resp.reason === 'no-conversation') {
+            setExportStatus('No conversation found on this page.', 'error');
+        } else {
+            setExportStatus('Export failed.', 'error');
+        }
+    });
+});
+
+exportPdfBtn.addEventListener('click', () => {
+    setExportBusy(true);
+    setExportStatus('Opening print dialog…');
+    sendToActiveTab('export-pdf', (resp, err) => {
+        setExportBusy(false);
+        if (err || !resp || !resp.ok) {
+            setExportStatus('Reload this tab and try again.', 'error');
+            return;
+        }
+        setExportStatus('Pick “Save as PDF” in the dialog.', 'success');
+        // Close the popup so the print dialog gets focus cleanly.
+        setTimeout(() => window.close(), 150);
     });
 });
 

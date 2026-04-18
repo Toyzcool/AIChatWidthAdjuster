@@ -8,16 +8,70 @@
 
 const STYLE_WIDTH_ID = 'ai-chat-width-style';
 const STYLE_WRAP_ID = 'ai-chat-wrap-style';
+const STYLE_PRINT_ID = 'ai-chat-print-style';
 const WIDTH_VAR = '--ai-chat-width';
 const DURATION_VAR = '--ai-chat-duration';
 const EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const DEFAULT_DURATION_MS = 420;
+
+// Shared @media print rules applied to every site on top of site-specific
+// rules. Handles page-break hints and typography that's universal.
+const SHARED_PRINT_CSS = `
+    @media print {
+        html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; color: #000 !important; }
+        body { font-size: 11pt !important; }
+
+        /* Hide UI chrome that every site has */
+        button, [role="button"], [contenteditable="true"] { display: none !important; }
+        nav, aside, header > *:not(main), footer { display: none !important; }
+
+        /* Keep code, tables, math, and figures together when possible */
+        pre, table, blockquote, figure, .katex-display, .math-block {
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+        }
+        h1, h2, h3, h4 {
+            break-after: avoid !important;
+            page-break-after: avoid !important;
+        }
+
+        /* Wrap long code/math instead of clipping */
+        pre, code { white-space: pre-wrap !important; word-wrap: break-word !important; }
+
+        /* Links: show URL after text for printed archive */
+        a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 9pt; color: #555; }
+
+        img { max-width: 100% !important; height: auto !important; }
+    }
+`;
 
 const SITES = {
     gemini: {
         match: (host) => host.includes('gemini.google.com'),
         storageKey: 'geminiWidth',
         defaultWidth: 1200,
+        printCSS: `
+            @media print {
+                /* Hide side nav, header chrome, input area, suggestion chips */
+                bard-sidenav-container, mat-sidenav,
+                .input-area-container, input-area-v2,
+                bard-header, .conversation-actions,
+                .response-footer, .tools-row {
+                    display: none !important;
+                }
+                /* Stretch conversation to full printable width */
+                #chat-history, .chat-history-scroll-container,
+                infinite-scroller, .conversation-container,
+                user-query, model-response {
+                    max-width: 100% !important;
+                    width: 100% !important;
+                    overflow: visible !important;
+                    height: auto !important;
+                }
+                /* Unwrap overflow containers that clip content on screen */
+                main, main > * { overflow: visible !important; height: auto !important; }
+            }
+        `,
         css: `
             .conversation-container,
             main > div:has(.conversation-container),
@@ -83,6 +137,32 @@ const SITES = {
         match: (host) => host.includes('claude.ai'),
         storageKey: 'claudeWidth',
         defaultWidth: 1000,
+        printCSS: `
+            @media print {
+                /* Hide side nav, top bar, composer, and project panels */
+                [data-chat-input-container="true"],
+                [data-testid="chat-menu-trigger"],
+                header, nav,
+                [class*="sidebar"], [class*="nav-"],
+                [data-testid*="navigation"] {
+                    display: none !important;
+                }
+                /* Conversation column fills the page */
+                [data-autoscroll-container="true"],
+                [data-autoscroll-container="true"] .max-w-3xl {
+                    max-width: 100% !important;
+                    width: 100% !important;
+                    overflow: visible !important;
+                    height: auto !important;
+                }
+                /* Release overflow clips Claude applies to the scroll area */
+                main, main > *, [data-autoscroll-container="true"] {
+                    overflow: visible !important;
+                    height: auto !important;
+                    max-height: none !important;
+                }
+            }
+        `,
         css: `
             /* Claude layout is constrained by Tailwind's max-w-3xl (768px).
                Widen messages… */
@@ -114,6 +194,28 @@ const SITES = {
         match: (host) => host.includes('chatgpt.com') || host.includes('chat.openai.com'),
         storageKey: 'chatgptWidth',
         defaultWidth: 1000,
+        printCSS: `
+            @media print {
+                /* Hide side nav, top header, composer, suggestion chips */
+                #stage-slideover-sidebar, #side-nav,
+                aside, header,
+                form[data-type="unified-composer"],
+                [data-testid="composer-root"],
+                [data-testid="suggestions"] {
+                    display: none !important;
+                }
+                /* Make thread area fill page; ChatGPT uses a CSS var for width */
+                main section [class*="--thread-content-max-width"] {
+                    --thread-content-max-width: 100% !important;
+                    max-width: 100% !important;
+                }
+                main, main > *, [class*="thread"] {
+                    overflow: visible !important;
+                    height: auto !important;
+                    max-height: none !important;
+                }
+            }
+        `,
         css: `
             /* ChatGPT drives both column and composer through --thread-content-max-width.
                Scoping to <section> restricts the override to message turns, keeping
@@ -189,6 +291,8 @@ function removeStyle(id) {
 const site = detectSite();
 if (site) {
     ensureStyle(STYLE_WIDTH_ID, buildSiteCSS(site));
+    // Print rules are always-injected but dormant outside @media print.
+    ensureStyle(STYLE_PRINT_ID, (site.printCSS || '') + SHARED_PRINT_CSS);
 
     const applyWidth = (width) => {
         const px = `${Number(width) || site.defaultWidth}px`;
@@ -540,16 +644,32 @@ function timestamp() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg?.type !== 'export-markdown') return;
-    try {
-        const key = extractorKeyForSite(site);
-        if (!key) { sendResponse({ ok: false, reason: 'unsupported-site' }); return; }
-        const md = buildConversationMarkdown();
-        if (!md) { sendResponse({ ok: false, reason: 'no-conversation' }); return; }
-        triggerDownload(`${key}-${timestamp()}.md`, md);
-        sendResponse({ ok: true, bytes: md.length });
-    } catch (e) {
-        sendResponse({ ok: false, reason: 'error', message: String(e) });
+    if (msg?.type === 'export-markdown') {
+        try {
+            const key = extractorKeyForSite(site);
+            if (!key) { sendResponse({ ok: false, reason: 'unsupported-site' }); return; }
+            const md = buildConversationMarkdown();
+            if (!md) { sendResponse({ ok: false, reason: 'no-conversation' }); return; }
+            triggerDownload(`${key}-${timestamp()}.md`, md);
+            sendResponse({ ok: true, bytes: md.length });
+        } catch (e) {
+            sendResponse({ ok: false, reason: 'error', message: String(e) });
+        }
+        return true;
     }
-    return true;
+
+    if (msg?.type === 'export-pdf') {
+        // The @media print rules are already injected, so simply triggering
+        // the browser's print dialog produces a clean printable view. User
+        // picks 'Save as PDF' from the destination dropdown.
+        try {
+            // Respond before opening the dialog — window.print() blocks in some
+            // Chrome builds and the popup is waiting on the callback.
+            sendResponse({ ok: true });
+            setTimeout(() => window.print(), 50);
+        } catch (e) {
+            sendResponse({ ok: false, reason: 'error', message: String(e) });
+        }
+        return true;
+    }
 });

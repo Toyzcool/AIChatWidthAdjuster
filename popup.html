@@ -339,6 +339,16 @@
     .export-btn:active:not(:disabled) { transform: scale(0.98); }
     .export-btn:disabled { opacity: 0.45; cursor: default; }
 
+    .export-btn.secondary {
+      background: var(--fill-tertiary);
+      color: var(--label);
+      margin-top: 6px;
+    }
+    .export-btn.secondary:hover:not(:disabled) { background: var(--fill-quaternary); }
+    @media (prefers-color-scheme: dark) {
+      .export-btn.secondary:hover:not(:disabled) { background: rgba(118, 118, 128, 0.32); }
+    }
+
     .export-status {
       margin-top: 8px;
       font-size: 11px;
@@ -416,7 +426,8 @@
   </div>
 
   <div class="card" data-export-for="gemini claude chatgpt" hidden>
-    <button class="export-btn" id="exportMdBtn">Export Conversation as Markdown</button>
+    <button class="export-btn" id="exportMdBtn">Export as Markdown</button>
+    <button class="export-btn secondary" id="exportPdfBtn">Export as PDF</button>
     <div class="export-status" id="exportStatus"></div>
   </div>
 
