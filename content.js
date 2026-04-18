@@ -147,19 +147,33 @@ const SITES = {
                 [data-testid*="navigation"] {
                     display: none !important;
                 }
+                /* Release every ancestor height/overflow constraint. Claude's
+                   scroll area sits several divs deep under body with each
+                   ancestor clipping to viewport height — without this release
+                   the print captures only one screen. */
+                html, body, body > *, body > * > *, body > * > * > *,
+                main, main *,
+                [data-autoscroll-container="true"],
+                [data-autoscroll-container="true"] *,
+                [class*="overflow"], [class*="h-screen"], [class*="h-full"],
+                [class*="min-h-"], [class*="max-h-"] {
+                    height: auto !important;
+                    max-height: none !important;
+                    min-height: 0 !important;
+                    overflow: visible !important;
+                }
                 /* Conversation column fills the page */
                 [data-autoscroll-container="true"],
                 [data-autoscroll-container="true"] .max-w-3xl {
                     max-width: 100% !important;
                     width: 100% !important;
-                    overflow: visible !important;
-                    height: auto !important;
                 }
-                /* Release overflow clips Claude applies to the scroll area */
-                main, main > *, [data-autoscroll-container="true"] {
-                    overflow: visible !important;
-                    height: auto !important;
-                    max-height: none !important;
+                /* Neutralize any fixed/absolute positioning that pins elements
+                   to the viewport and truncates them at the page edge. */
+                [data-autoscroll-container="true"],
+                [data-autoscroll-container="true"] * {
+                    position: static !important;
+                    transform: none !important;
                 }
             }
         `,
