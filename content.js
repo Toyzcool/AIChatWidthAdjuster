@@ -1059,7 +1059,7 @@ function mountBookmarksPanel() {
     });
 
     refreshBookmarkList();
-    onUrlChange(refreshBookmarkList);
+    onUrlChange(() => { pruneNonSelectionBookmarks(); refreshBookmarkList(); });
 
     // Storage-level updates from another tab or future in-page writes should
     // re-render immediately so bookmarks stay in sync without a manual reload.
@@ -1069,46 +1069,9 @@ function mountBookmarksPanel() {
         if (convId && changes[bookmarksStorageKey(convId)]) refreshBookmarkList();
     });
 
-    attachBookmarkContextMenu();
+    attachSelectionBubble();
+    pruneNonSelectionBookmarks();
 }
-
-// Wire a capture-phase contextmenu listener so we can pre-empt the page's
-// own handlers when the click lands inside a message. Falls through to the
-// native menu in every other case.
-function attachBookmarkContextMenu() {
-    document.addEventListener('contextmenu', (e) => {
-        const msgEl = findMessageElement(e.target);
-        if (!msgEl) return;
-        const sel = window.getSelection();
-        const selectedText = sel ? sel.toString().trim() : '';
-
-        // If the click didn't land inside the selection, treat it as a
-        // whole-message right-click even when text is selected elsewhere.
-        let inSelection = false;
-        if (selectedText && sel.rangeCount) {
-            const range = sel.getRangeAt(0);
-            inSelection = range.intersectsNode(e.target) || msgEl.contains(range.commonAncestorContainer);
-        }
-
-        e.preventDefault();
-        if (selectedText && inSelection) {
-            openBookmarkMenu(e.clientX, e.clientY, {
-                kind: 'selection', el: msgEl, text: selectedText,
-            });
-        } else {
-            openBookmarkMenu(e.clientX, e.clientY, { kind: 'message', el: msgEl });
-        }
-    }, true);
-
-    // Any left click dismisses an open menu.
-    document.addEventListener('click', (e) => {
-        const menu = document.getElementById(BOOKMARK_MENU_ID);
-        if (menu && !menu.contains(e.target)) closeBookmarkMenu();
-    }, true);
-    document.addEventListener('scroll', closeBookmarkMenu, true);
-}
-
-const BOOKMARK_MENU_ID = 'ai-toolbox-bookmark-menu';
 
 // Delegate to the site adapter so each host's per-message container selector
 // lives in one place.
@@ -1118,60 +1081,109 @@ function findMessageElement(node) {
     return a ? a.findMessageElement(node) : null;
 }
 
-function openBookmarkMenu(x, y, ctx) {
-    closeBookmarkMenu();
-    const menu = document.createElement('div');
-    menu.id = BOOKMARK_MENU_ID;
-    const label = ctx.kind === 'selection' ? 'Bookmark selected text' : 'Bookmark this message';
-    menu.innerHTML = `
-        <button type="button" data-action="add">
+// Floating "Bookmark selection" bubble — appears near the current selection
+// whenever the user has highlighted text inside a supported message. Clicks
+// anywhere else, scroll, or a cleared selection dismisses it. The browser's
+// native right-click menu stays untouched — this feature is the sole path
+// for creating bookmarks now that context-menu capture was removed.
+const SELECTION_BUBBLE_ID = 'ai-toolbox-selection-bubble';
+
+function attachSelectionBubble() {
+    // selectionchange fires on every caret move, so debounce to the next
+    // frame — prevents thrashing the bubble when the user is still dragging.
+    let pending = false;
+    const schedule = () => {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(() => { pending = false; maybeShowBubble(); });
+    };
+    document.addEventListener('selectionchange', schedule);
+    document.addEventListener('scroll', dismissSelectionBubble, true);
+    document.addEventListener('mousedown', (e) => {
+        // Keep bubble open when the click is on the bubble itself — the
+        // bubble's mousedown handler preventDefaults focus theft.
+        const bubble = document.getElementById(SELECTION_BUBBLE_ID);
+        if (bubble && bubble.contains(e.target)) return;
+        dismissSelectionBubble();
+    }, true);
+}
+
+function maybeShowBubble() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) {
+        dismissSelectionBubble();
+        return;
+    }
+    const text = sel.toString().trim();
+    if (!text) { dismissSelectionBubble(); return; }
+
+    const range = sel.getRangeAt(0);
+    // Only surface the bubble when the selection lives inside a message node
+    // of a supported site — selecting in the composer or elsewhere stays
+    // untouched.
+    const anchor = range.commonAncestorContainer.nodeType === 1
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+    const msgEl = anchor && findMessageElement(anchor);
+    if (!msgEl) { dismissSelectionBubble(); return; }
+
+    renderSelectionBubble(range, msgEl, text);
+}
+
+function renderSelectionBubble(range, msgEl, text) {
+    let bubble = document.getElementById(SELECTION_BUBBLE_ID);
+    if (!bubble) {
+        bubble = document.createElement('button');
+        bubble.id = SELECTION_BUBBLE_ID;
+        bubble.type = 'button';
+        bubble.innerHTML = `
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
             </svg>
-            <span>${label}</span>
-        </button>
-    `;
-    menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
-    menu.style.top = `${Math.min(y, window.innerHeight - 60)}px`;
-    document.body.appendChild(menu);
-
-    menu.querySelector('[data-action="add"]').addEventListener('click', async () => {
-        closeBookmarkMenu();
-        if (ctx.kind === 'selection') await addSelectionBookmark(ctx.el, ctx.text);
-        else await addMessageBookmark(ctx.el);
-    });
-}
-
-function closeBookmarkMenu() {
-    const menu = document.getElementById(BOOKMARK_MENU_ID);
-    if (menu) menu.remove();
-}
-
-async function addMessageBookmark(msgEl) {
-    const convId = getConversationId();
-    const adapter = currentAdapter();
-    if (!convId || !adapter) return;
-    const key = adapter.getMessageKey(msgEl);
-    const text = (msgEl.innerText || msgEl.textContent || '').trim().replace(/\s+/g, ' ');
-    const snippet = text.length > 200 ? text.slice(0, 200) + '…' : text;
-
-    const note = window.prompt('Optional note for this bookmark:', '') || '';
-
-    const bookmark = {
-        id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        createdAt: Date.now(),
-        key,
-        role: key.role,
-        snippet,
-        note: note.trim(),
+            <span>Bookmark</span>
+        `;
+        // mousedown preventDefault keeps the text selection intact — otherwise
+        // clicking the bubble would deselect, which would dismiss the bubble
+        // before the click handler fires.
+        bubble.addEventListener('mousedown', (e) => e.preventDefault());
+        document.body.appendChild(bubble);
+    }
+    // Re-bind the click each render so we capture the current {msgEl, text}.
+    bubble.onclick = async () => {
+        dismissSelectionBubble();
+        await addSelectionBookmark(msgEl, text);
     };
 
-    loadBookmarks(convId, (existing) => {
-        saveBookmarks(convId, [...existing, bookmark]);
-    });
+    const rect = range.getBoundingClientRect();
+    const bubbleRect = bubble.getBoundingClientRect();
+    // Prefer placement above the selection; flip below when near top edge.
+    const above = rect.top > bubbleRect.height + 12;
+    const top = above ? rect.top - bubbleRect.height - 8 : rect.bottom + 8;
+    const left = Math.max(8, Math.min(
+        window.innerWidth - bubbleRect.width - 8,
+        rect.left + rect.width / 2 - bubbleRect.width / 2
+    ));
+    bubble.style.top = `${top}px`;
+    bubble.style.left = `${left}px`;
+    bubble.setAttribute('data-visible', 'true');
+}
 
-    setPanelCollapsed(false);
+function dismissSelectionBubble() {
+    const bubble = document.getElementById(SELECTION_BUBBLE_ID);
+    if (bubble) bubble.remove();
+}
+
+// Drop any previously-saved whole-message bookmarks (pre-3.2 or earlier
+// selection-less captures) so the panel only shows items we can still
+// create going forward. Runs once per conversation load.
+function pruneNonSelectionBookmarks() {
+    const convId = getConversationId();
+    if (!convId) return;
+    loadBookmarks(convId, (existing) => {
+        const filtered = existing.filter(b => b.selection && b.selection.text);
+        if (filtered.length !== existing.length) saveBookmarks(convId, filtered);
+    });
 }
 
 async function addSelectionBookmark(msgEl, selectionText) {
@@ -1601,49 +1613,38 @@ const BOOKMARKS_CSS = `
         100% { background: transparent; }
     }
 
-    #${BOOKMARK_MENU_ID} {
+    #${SELECTION_BUBBLE_ID} {
         position: fixed;
         z-index: 2147483647;
-        min-width: 200px;
-        padding: 4px;
-        background: rgba(255, 255, 255, 0.98);
-        border-radius: 10px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-        font-size: 13px;
-        color: #1d1d1f;
-        animation: aitb-menu-in 0.12s ease-out;
-    }
-    @keyframes aitb-menu-in {
-        from { opacity: 0; transform: translateY(-4px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    #${BOOKMARK_MENU_ID} button {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        gap: 8px;
-        width: 100%;
-        padding: 8px 10px;
-        background: transparent;
+        gap: 6px;
+        padding: 6px 12px;
+        background: #1d1d1f;
+        color: #ffffff;
         border: none;
-        border-radius: 6px;
-        color: inherit;
-        font: inherit;
-        text-align: left;
+        border-radius: 999px;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.12);
         cursor: pointer;
-        transition: background 0.1s ease;
+        animation: aitb-bubble-in 0.14s ease-out;
+        user-select: none;
     }
-    #${BOOKMARK_MENU_ID} button:hover { background: rgba(0, 122, 255, 0.12); }
-
+    #${SELECTION_BUBBLE_ID}:hover { background: #000000; transform: translateY(-1px); }
+    #${SELECTION_BUBBLE_ID}:active { transform: translateY(0); }
+    @keyframes aitb-bubble-in {
+        from { opacity: 0; transform: translateY(4px) scale(0.96); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+    }
     @media (prefers-color-scheme: dark) {
-        #${BOOKMARK_MENU_ID} {
-            background: rgba(44, 44, 46, 0.98);
-            color: rgba(255, 255, 255, 0.92);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        #${SELECTION_BUBBLE_ID} {
+            background: #f5f5f7;
+            color: #1d1d1f;
         }
-        #${BOOKMARK_MENU_ID} button:hover { background: rgba(10, 132, 255, 0.22); }
+        #${SELECTION_BUBBLE_ID}:hover { background: #ffffff; }
     }
 
     @media (prefers-color-scheme: dark) {
