@@ -1641,8 +1641,8 @@ const BOOKMARKS_CSS = `
         animation: aitb-bubble-in 0.14s ease-out;
         user-select: none;
     }
-    #${SELECTION_BUBBLE_ID}:hover { background: #000000; transform: translateY(-1px); }
-    #${SELECTION_BUBBLE_ID}:active { transform: translateY(0); }
+    #${SELECTION_BUBBLE_ID}:hover { background: #000000; }
+    #${SELECTION_BUBBLE_ID}:active { opacity: 0.85; }
     @keyframes aitb-bubble-in {
         from { opacity: 0; transform: translateY(4px) scale(0.96); }
         to { opacity: 1; transform: translateY(0) scale(1); }
