@@ -996,6 +996,101 @@ function mountBookmarksPanel() {
         const convId = getConversationId();
         if (convId && changes[bookmarksStorageKey(convId)]) refreshBookmarkList();
     });
+
+    attachBookmarkContextMenu();
+}
+
+// Wire a capture-phase contextmenu listener so we can pre-empt the page's
+// own handlers when the click lands inside a message. Falls through to the
+// native menu in every other case.
+function attachBookmarkContextMenu() {
+    document.addEventListener('contextmenu', (e) => {
+        const msgEl = findMessageElement(e.target);
+        if (!msgEl) return;
+        // If the user has text selected, reserve the right-click for the
+        // future "bookmark selection" flow (stage 4). For now, only handle
+        // the whole-message case.
+        const sel = window.getSelection();
+        if (sel && sel.toString().trim()) return;
+
+        e.preventDefault();
+        openBookmarkMenu(e.clientX, e.clientY, { kind: 'message', el: msgEl });
+    }, true);
+
+    // Any left click dismisses an open menu.
+    document.addEventListener('click', (e) => {
+        const menu = document.getElementById(BOOKMARK_MENU_ID);
+        if (menu && !menu.contains(e.target)) closeBookmarkMenu();
+    }, true);
+    document.addEventListener('scroll', closeBookmarkMenu, true);
+}
+
+const BOOKMARK_MENU_ID = 'ai-toolbox-bookmark-menu';
+
+// Find the nearest ChatGPT message container. data-message-id is on the
+// element that wraps a single turn; data-message-author-role lives on the
+// same node and tells us user vs assistant.
+function findMessageElement(node) {
+    if (!(node instanceof Element)) return null;
+    return node.closest('[data-message-id]');
+}
+
+function openBookmarkMenu(x, y, ctx) {
+    closeBookmarkMenu();
+    const menu = document.createElement('div');
+    menu.id = BOOKMARK_MENU_ID;
+    menu.innerHTML = `
+        <button type="button" data-action="add">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span>Bookmark this message</span>
+        </button>
+    `;
+    // Clamp to viewport so the menu never renders off-screen.
+    menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
+    menu.style.top = `${Math.min(y, window.innerHeight - 60)}px`;
+    document.body.appendChild(menu);
+
+    menu.querySelector('[data-action="add"]').addEventListener('click', async () => {
+        closeBookmarkMenu();
+        await addMessageBookmark(ctx.el);
+    });
+}
+
+function closeBookmarkMenu() {
+    const menu = document.getElementById(BOOKMARK_MENU_ID);
+    if (menu) menu.remove();
+}
+
+async function addMessageBookmark(msgEl) {
+    const convId = getConversationId();
+    if (!convId) return;
+    const messageId = msgEl.getAttribute('data-message-id');
+    const role = msgEl.getAttribute('data-message-author-role') === 'user' ? 'user' : 'assistant';
+    const text = (msgEl.innerText || msgEl.textContent || '').trim().replace(/\s+/g, ' ');
+    const snippet = text.length > 200 ? text.slice(0, 200) + '…' : text;
+
+    // Optional note — prompt() is deliberate for the MVP; a proper inline
+    // editor lands in stage 5 along with delete/edit affordances.
+    const note = window.prompt('Optional note for this bookmark:', '') || '';
+
+    const bookmark = {
+        id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: Date.now(),
+        messageId,
+        role,
+        snippet,
+        note: note.trim(),
+    };
+
+    loadBookmarks(convId, (existing) => {
+        saveBookmarks(convId, [...existing, bookmark]);
+    });
+
+    // Ensure panel is visible so the user sees the new bookmark landing.
+    setPanelCollapsed(false);
 }
 
 function refreshBookmarkList() {
@@ -1193,6 +1288,51 @@ const BOOKMARKS_CSS = `
         background: rgba(0, 122, 255, 0.08);
         border-radius: 6px;
         border-left: 2px solid rgba(0, 122, 255, 0.4);
+    }
+
+    #${BOOKMARK_MENU_ID} {
+        position: fixed;
+        z-index: 2147483647;
+        min-width: 200px;
+        padding: 4px;
+        background: rgba(255, 255, 255, 0.98);
+        border-radius: 10px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        font-size: 13px;
+        color: #1d1d1f;
+        animation: aitb-menu-in 0.12s ease-out;
+    }
+    @keyframes aitb-menu-in {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    #${BOOKMARK_MENU_ID} button {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 10px;
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition: background 0.1s ease;
+    }
+    #${BOOKMARK_MENU_ID} button:hover { background: rgba(0, 122, 255, 0.12); }
+
+    @media (prefers-color-scheme: dark) {
+        #${BOOKMARK_MENU_ID} {
+            background: rgba(44, 44, 46, 0.98);
+            color: rgba(255, 255, 255, 0.92);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+        #${BOOKMARK_MENU_ID} button:hover { background: rgba(10, 132, 255, 0.22); }
     }
 
     @media (prefers-color-scheme: dark) {
