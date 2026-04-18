@@ -48,95 +48,9 @@ const PRINT_OVERLAY_CSS = `
         color: #666;
     }
     @media print {
-        /* Hide the preview banner when actually printing. */
-        #${PRINT_OVERLAY_ID}::before { display: none !important; }
-        /* Hide the live page — only the overlay prints. */
+        /* Minimal rules. If this doesn't work, the issue is inherent to
+           print-rendering the overlay inside the live document's body. */
         body > *:not(#${PRINT_OVERLAY_ID}) { display: none !important; }
-
-        /* Reset body so only the overlay's flow governs the printed page. */
-        html, body {
-            margin: 0 !important;
-            padding: 0 !important;
-            background: #fff !important;
-            color: #000 !important;
-            height: auto !important;
-            overflow: visible !important;
-        }
-
-        #${PRINT_OVERLAY_ID} {
-            display: block !important;
-            position: static !important;
-            width: 100% !important;
-            max-width: 100% !important;
-            height: auto !important;
-            max-height: none !important;
-            overflow: visible !important;
-            background: #fff !important;
-            color: #000 !important;
-            padding: 0 !important;
-            font-size: 11pt !important;
-        }
-
-        /* Sanitized clone already has no classes/styles, so we don't need an
-           aggressive '* { ... }' reset — those resets were suspected of
-           interacting badly with print rendering and hiding prose text. Keep
-           only lightweight layout rules for descendants. */
-        #${PRINT_OVERLAY_ID} * {
-            max-width: 100%;
-            overflow: visible;
-        }
-
-        /* Hide any interactive chrome that the clone inherited. Do NOT hide
-           [aria-hidden="true"] — KaTeX's visually-rendered formula tree is
-           marked aria-hidden (the accessible copy is in .katex-mathml), so
-           hiding it would erase every math expression from the PDF. */
-        #${PRINT_OVERLAY_ID} button,
-        #${PRINT_OVERLAY_ID} [role="button"] {
-            display: none !important;
-        }
-        /* Hide the redundant MathML tree so we don't print the formula twice
-           once we're letting the visual katex-html render. */
-        #${PRINT_OVERLAY_ID} .katex-mathml { display: none !important; }
-
-        /* Keep code, tables, math together when possible. */
-        #${PRINT_OVERLAY_ID} pre,
-        #${PRINT_OVERLAY_ID} table,
-        #${PRINT_OVERLAY_ID} blockquote,
-        #${PRINT_OVERLAY_ID} figure,
-        #${PRINT_OVERLAY_ID} .katex-display,
-        #${PRINT_OVERLAY_ID} .math-block {
-            break-inside: avoid !important;
-            page-break-inside: avoid !important;
-        }
-        #${PRINT_OVERLAY_ID} h1, #${PRINT_OVERLAY_ID} h2,
-        #${PRINT_OVERLAY_ID} h3, #${PRINT_OVERLAY_ID} h4 {
-            break-after: avoid !important;
-            page-break-after: avoid !important;
-        }
-
-        #${PRINT_OVERLAY_ID} pre,
-        #${PRINT_OVERLAY_ID} code {
-            white-space: pre-wrap !important;
-            word-wrap: break-word !important;
-        }
-
-        #${PRINT_OVERLAY_ID} a[href^="http"]::after {
-            content: " (" attr(href) ")";
-            font-size: 9pt;
-            color: #555 !important;
-        }
-
-        #${PRINT_OVERLAY_ID} img { max-width: 100% !important; height: auto !important; }
-
-        /* Gap between synthetic ChatGPT turns (cloned out of their original
-           flow, so parent spacing no longer applies). */
-        #${PRINT_OVERLAY_ID} [data-ai-chat-print-root] > [data-message-author-role] {
-            margin: 12pt 0 !important;
-            padding-bottom: 8pt !important;
-        }
-        #${PRINT_OVERLAY_ID} [data-role="user"] {
-            font-weight: 500;
-        }
     }
 `;
 
