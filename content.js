@@ -77,23 +77,13 @@ const PRINT_OVERLAY_CSS = `
             font-size: 11pt !important;
         }
 
+        /* Sanitized clone already has no classes/styles, so we don't need an
+           aggressive '* { ... }' reset — those resets were suspected of
+           interacting badly with print rendering and hiding prose text. Keep
+           only lightweight layout rules for descendants. */
         #${PRINT_OVERLAY_ID} * {
-            max-width: 100% !important;
-            max-height: none !important;
-            overflow: visible !important;
-            color: #000 !important;
-            /* Some sites (ChatGPT streaming prose) render text via
-               -webkit-text-fill-color: transparent + background-clip: text
-               for gradient effects. That property overrides 'color', so
-               paragraphs come out invisible unless we reset it explicitly. */
-            -webkit-text-fill-color: #000 !important;
-            background: transparent !important;
-            background-image: none !important;
-            -webkit-background-clip: border-box !important;
-            background-clip: border-box !important;
-            text-shadow: none !important;
-            opacity: 1 !important;
-            visibility: visible !important;
+            max-width: 100%;
+            overflow: visible;
         }
 
         /* Hide any interactive chrome that the clone inherited. Do NOT hide
