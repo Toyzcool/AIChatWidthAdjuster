@@ -78,10 +78,11 @@ function tweenSliderTo(siteId, target) {
 function showPanel(siteId) {
     tabBtns.forEach(btn => btn.classList.toggle('active', btn.dataset.site === siteId));
     panels.forEach(p => { p.hidden = p.dataset.panel !== siteId; });
-    // Show site-specific export cards only when the active tab matches. Export
-    // is wired per-site; cards without an extractor stay hidden.
+    // Show site-specific export cards only when the active tab matches.
+    // data-export-for may list multiple sites (space-separated).
     document.querySelectorAll('[data-export-for]').forEach(card => {
-        card.hidden = card.dataset.exportFor !== siteId;
+        const sites = (card.dataset.exportFor || '').split(/\s+/).filter(Boolean);
+        card.hidden = !sites.includes(siteId);
     });
 }
 

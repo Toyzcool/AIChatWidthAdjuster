@@ -240,6 +240,43 @@ const EXTRACTORS = {
         }
         return messages;
     },
+
+    chatgpt: () => {
+        // ChatGPT tags every turn with data-message-author-role. Iterating in
+        // document order preserves the conversation order.
+        const turns = document.querySelectorAll('[data-message-author-role]');
+        const messages = [];
+        for (const el of turns) {
+            const author = el.getAttribute('data-message-author-role');
+            if (author !== 'user' && author !== 'assistant') continue;
+            const role = author === 'user' ? 'User' : 'Assistant';
+            // Prefer the prose container when present; falls back to the turn
+            // wrapper so user messages (which don't have .markdown) still work.
+            const content = el.querySelector('.markdown') || el;
+            messages.push({ role, element: content });
+        }
+        return messages;
+    },
+
+    gemini: () => {
+        // Gemini uses custom elements <user-query> and <model-response>.
+        // Selecting both at once and iterating in document order keeps turns
+        // interleaved correctly.
+        const turns = document.querySelectorAll('user-query, model-response');
+        const messages = [];
+        for (const el of turns) {
+            const tag = el.tagName.toLowerCase();
+            const role = tag === 'user-query' ? 'User' : 'Assistant';
+            // For assistants, use the rendered markdown block if available to
+            // skip chrome like sources/attribution UI. Users usually have their
+            // text in a .query-text container.
+            const content = role === 'Assistant'
+                ? (el.querySelector('.markdown, .model-response-text, message-content') || el)
+                : (el.querySelector('.query-text, [class*="query-text"]') || el);
+            messages.push({ role, element: content });
+        }
+        return messages;
+    },
 };
 
 // --- HTML → Markdown ----------------------------------------------------
