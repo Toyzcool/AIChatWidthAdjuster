@@ -1157,12 +1157,20 @@ function renderSelectionBubble(range, msgEl, text) {
 
     const rect = range.getBoundingClientRect();
     const bubbleRect = bubble.getBoundingClientRect();
-    // Prefer placement above the selection; flip below when near top edge.
-    const above = rect.top > bubbleRect.height + 12;
-    const top = above ? rect.top - bubbleRect.height - 8 : rect.bottom + 8;
+    // Host sites (ChatGPT, Claude) put their own selection UI above the
+    // selection — Reply/Quote buttons etc. Prefer placing ours BELOW so we
+    // don't visually collide with or occlude those controls. Only flip to
+    // above when the bubble would fall off the bottom of the viewport.
+    const gap = 10;
+    const fitsBelow = rect.bottom + bubbleRect.height + gap <= window.innerHeight;
+    const top = fitsBelow ? rect.bottom + gap : rect.top - bubbleRect.height - gap;
+    // Nudge horizontally so the bubble's center doesn't overlap the
+    // selection's center — offset 60px right keeps it clear of any native
+    // pill that might also center on the selection.
+    const desired = rect.left + rect.width / 2 - bubbleRect.width / 2 + 60;
     const left = Math.max(8, Math.min(
         window.innerWidth - bubbleRect.width - 8,
-        rect.left + rect.width / 2 - bubbleRect.width / 2
+        desired
     ));
     bubble.style.top = `${top}px`;
     bubble.style.left = `${left}px`;
