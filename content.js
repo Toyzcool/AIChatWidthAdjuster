@@ -875,3 +875,198 @@ function unmountPrintOverlay() {
     const existing = document.getElementById(PRINT_OVERLAY_ID);
     if (existing) existing.remove();
 }
+
+// --- Bookmarks panel -----------------------------------------------------
+// Right-side collapsible panel that lists bookmarks for the active
+// conversation. Stage 1 scope: UI shell only (frame + collapse/expand,
+// persisted state). Storage, context menu, and message anchoring land in
+// subsequent commits.
+//
+// Scoped to ChatGPT for the MVP — Claude and Gemini will be added once the
+// ChatGPT flow is proven.
+
+const BOOKMARKS_PANEL_ID = 'ai-toolbox-bookmarks-panel';
+const BOOKMARKS_STATE_KEY = 'bookmarksPanelCollapsed';
+const BOOKMARKS_SUPPORTED_SITES = new Set(['chatgptWidth']);
+
+function bookmarksSupportedForCurrentSite() {
+    return !!site && BOOKMARKS_SUPPORTED_SITES.has(site.storageKey);
+}
+
+function mountBookmarksPanel() {
+    if (!bookmarksSupportedForCurrentSite()) return;
+    if (document.getElementById(BOOKMARKS_PANEL_ID)) return;
+
+    const panel = document.createElement('div');
+    panel.id = BOOKMARKS_PANEL_ID;
+    panel.setAttribute('data-collapsed', 'true');
+    panel.innerHTML = `
+        <button class="aitb-bm-toggle" type="button" aria-label="Toggle bookmarks">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+            </svg>
+        </button>
+        <div class="aitb-bm-body">
+            <div class="aitb-bm-header">
+                <span class="aitb-bm-title">Bookmarks</span>
+                <button class="aitb-bm-collapse" type="button" aria-label="Collapse">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 18l6-6-6-6"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="aitb-bm-list">
+                <div class="aitb-bm-empty">No bookmarks yet. Select text or right-click a message to add one.</div>
+            </div>
+        </div>
+    `;
+
+    ensureStyle('ai-toolbox-bookmarks-style', BOOKMARKS_CSS);
+    document.body.appendChild(panel);
+
+    const toggle = () => setPanelCollapsed(!isPanelCollapsed());
+    panel.querySelector('.aitb-bm-toggle').addEventListener('click', toggle);
+    panel.querySelector('.aitb-bm-collapse').addEventListener('click', toggle);
+
+    chrome.storage.local.get(BOOKMARKS_STATE_KEY, (r) => {
+        setPanelCollapsed(r[BOOKMARKS_STATE_KEY] !== false);
+    });
+}
+
+function isPanelCollapsed() {
+    const panel = document.getElementById(BOOKMARKS_PANEL_ID);
+    return !panel || panel.getAttribute('data-collapsed') === 'true';
+}
+
+function setPanelCollapsed(collapsed) {
+    const panel = document.getElementById(BOOKMARKS_PANEL_ID);
+    if (!panel) return;
+    panel.setAttribute('data-collapsed', collapsed ? 'true' : 'false');
+    chrome.storage.local.set({ [BOOKMARKS_STATE_KEY]: collapsed });
+}
+
+// Panel CSS is scoped under the fixed ID — we don't leak styles to the host
+// page. Color values follow Apple-ish semantic tokens similar to popup.html.
+const BOOKMARKS_CSS = `
+    #${BOOKMARKS_PANEL_ID} {
+        position: fixed;
+        top: 0;
+        right: 0;
+        height: 100vh;
+        z-index: 2147483646;
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+            "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", sans-serif;
+        font-size: 13px;
+        pointer-events: none;
+    }
+    #${BOOKMARKS_PANEL_ID} > * { pointer-events: auto; }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        transform: translateY(-50%);
+        width: 32px;
+        height: 56px;
+        border: none;
+        border-radius: 10px 0 0 10px;
+        background: rgba(255, 255, 255, 0.92);
+        color: #1d1d1f;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.2s ease, background 0.2s ease, opacity 0.2s ease;
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle:hover { transform: translateY(-50%) translateX(-2px); }
+    #${BOOKMARKS_PANEL_ID}[data-collapsed="false"] .aitb-bm-toggle { opacity: 0; pointer-events: none; }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-body {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 320px;
+        height: 100vh;
+        background: rgba(255, 255, 255, 0.96);
+        border-left: 0.5px solid rgba(0, 0, 0, 0.1);
+        box-shadow: -8px 0 30px rgba(0, 0, 0, 0.08);
+        display: flex;
+        flex-direction: column;
+        transform: translateX(100%);
+        transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+    }
+    #${BOOKMARKS_PANEL_ID}[data-collapsed="false"] .aitb-bm-body { transform: translateX(0); }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 14px 10px;
+        border-bottom: 0.5px solid rgba(0, 0, 0, 0.08);
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #1d1d1f;
+        letter-spacing: -0.01em;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse {
+        background: transparent;
+        border: none;
+        color: rgba(60, 60, 67, 0.6);
+        padding: 4px;
+        border-radius: 6px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        transition: background 0.15s ease;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse:hover {
+        background: rgba(0, 0, 0, 0.05);
+    }
+
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+    }
+    #${BOOKMARKS_PANEL_ID} .aitb-bm-empty {
+        padding: 32px 16px;
+        text-align: center;
+        color: rgba(60, 60, 67, 0.55);
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle {
+            background: rgba(44, 44, 46, 0.9);
+            color: rgba(255, 255, 255, 0.92);
+        }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-body {
+            background: rgba(28, 28, 30, 0.96);
+            border-left-color: rgba(255, 255, 255, 0.08);
+        }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-title { color: rgba(255, 255, 255, 0.95); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-header { border-bottom-color: rgba(255, 255, 255, 0.08); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse { color: rgba(235, 235, 245, 0.5); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse:hover { background: rgba(255, 255, 255, 0.06); }
+        #${BOOKMARKS_PANEL_ID} .aitb-bm-empty { color: rgba(235, 235, 245, 0.45); }
+    }
+`;
+
+// Mount after DOM is ready. content_scripts runs at document_start so body
+// may not exist yet.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mountBookmarksPanel);
+} else {
+    mountBookmarksPanel();
+}
