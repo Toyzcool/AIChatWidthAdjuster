@@ -1155,22 +1155,43 @@ function findMessageElement(node) {
 // for creating bookmarks now that context-menu capture was removed.
 const SELECTION_BUBBLE_ID = 'ai-toolbox-selection-bubble';
 
+// Delay between a stable (non-empty) selection and the bubble appearing.
+// Gives the user time to finish refining the selection without the pill
+// jittering into view mid-drag.
+const BUBBLE_DELAY_MS = 500;
+
 function attachSelectionBubble() {
-    // selectionchange fires on every caret move, so debounce to the next
-    // frame — prevents thrashing the bubble when the user is still dragging.
-    let pending = false;
-    const schedule = () => {
-        if (pending) return;
-        pending = true;
-        requestAnimationFrame(() => { pending = false; maybeShowBubble(); });
+    let pendingTimer = null;
+    const cancelPending = () => {
+        if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
     };
-    document.addEventListener('selectionchange', schedule);
-    document.addEventListener('scroll', dismissSelectionBubble, true);
+    const onSelectionChange = () => {
+        const sel = window.getSelection();
+        // Any empty/cleared selection dismisses immediately — no delay,
+        // otherwise the bubble would still appear after the user clicked
+        // away to deselect.
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+            cancelPending();
+            dismissSelectionBubble();
+            return;
+        }
+        // Any movement while the user is still selecting resets the timer,
+        // so the bubble only lands 500ms after the selection stops changing.
+        cancelPending();
+        pendingTimer = setTimeout(() => { pendingTimer = null; maybeShowBubble(); }, BUBBLE_DELAY_MS);
+    };
+
+    document.addEventListener('selectionchange', onSelectionChange);
+    document.addEventListener('scroll', () => {
+        cancelPending();
+        dismissSelectionBubble();
+    }, true);
     document.addEventListener('mousedown', (e) => {
-        // Keep bubble open when the click is on the bubble itself — the
-        // bubble's mousedown handler preventDefaults focus theft.
         const bubble = document.getElementById(SELECTION_BUBBLE_ID);
         if (bubble && bubble.contains(e.target)) return;
+        // Starting a new drag-select dismisses the old pill — the new one
+        // will show 500ms after the new selection settles.
+        cancelPending();
         dismissSelectionBubble();
     }, true);
 }
