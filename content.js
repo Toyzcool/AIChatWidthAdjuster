@@ -895,14 +895,39 @@ const BOOKMARKS_STORAGE_PREFIX = 'bookmarks:';
 // prefers-color-scheme, which drifts when the user overrides the site theme.
 const THEME_ATTR = 'data-aitb-theme';
 
+// Theme detection prefers actual rendered luminance over class-sniffing:
+// ChatGPT uses <html class="dark">, Claude's structure is more nuanced and
+// may not expose a single toggle attribute. Reading the computed background
+// of <body> side-steps all of that — if the page renders a dark background
+// we pick dark, period. Falls back to class markers and prefers-color-scheme
+// only when body has no resolved background (e.g. before first paint).
 function detectHostTheme() {
+    const body = document.body;
+    if (body) {
+        const bg = getComputedStyle(body).backgroundColor;
+        const lum = bgLuminance(bg);
+        if (lum !== null) return lum < 0.5 ? 'dark' : 'light';
+    }
     const root = document.documentElement;
     if (root.classList.contains('dark')) return 'dark';
     if (root.classList.contains('light')) return 'light';
-    // Some layouts set a data-theme attribute instead.
     const dataTheme = root.getAttribute('data-theme');
     if (dataTheme === 'dark' || dataTheme === 'light') return dataTheme;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+// Parse rgb()/rgba()/hex color strings and return perceived luminance in
+// [0, 1]. Returns null for fully transparent or unrecognized values so the
+// caller can fall through to other heuristics.
+function bgLuminance(str) {
+    if (!str) return null;
+    const m = str.match(/rgba?\(([^)]+)\)/i);
+    if (!m) return null;
+    const parts = m[1].split(',').map(s => parseFloat(s.trim()));
+    const [r, g, b, a = 1] = parts;
+    if (!Number.isFinite(r) || a === 0) return null;
+    // Rec. 601 luma — good enough for a dark/light branch.
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 }
 
 function applyHostTheme() {
@@ -915,11 +940,18 @@ function applyHostTheme() {
 
 function watchHostTheme() {
     applyHostTheme();
+    // Watch both <html> and <body> — ChatGPT toggles class on html, Claude
+    // sometimes swaps wrapper styles that ripple up to body. A background
+    // change on either triggers a luminance re-check.
     const observer = new MutationObserver(applyHostTheme);
     observer.observe(document.documentElement, {
-        attributes: true, attributeFilter: ['class', 'data-theme'],
+        attributes: true, attributeFilter: ['class', 'data-theme', 'style'],
     });
-    // OS-level fallback keeps working when the host doesn't drive theme.
+    if (document.body) {
+        observer.observe(document.body, {
+            attributes: true, attributeFilter: ['class', 'data-theme', 'style'],
+        });
+    }
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyHostTheme);
 }
 
@@ -1676,20 +1708,17 @@ const BOOKMARKS_CSS = `
         letter-spacing: -0.01em;
         box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.12);
         cursor: pointer;
-        animation: aitb-bubble-in 0.14s ease-out;
+        animation: aitb-bubble-in 0.42s cubic-bezier(0.22, 1, 0.36, 1);
         user-select: none;
     }
     #${SELECTION_BUBBLE_ID}:hover { background: #000000; }
     #${SELECTION_BUBBLE_ID}:active { opacity: 0.85; }
-    /* Pure opacity fade — the earlier scale/translate felt jumpy now that we
-       reposition below the selection. Slightly longer duration + ease-out
-       gives the bubble a softer settle without visual drift. */
+    /* Pure opacity fade with a soft ease-out curve. Duration is set inline
+       on the bubble itself (see the main #${SELECTION_BUBBLE_ID} rule above)
+       so the feel stays consistent if we ever tune timing. */
     @keyframes aitb-bubble-in {
         from { opacity: 0; }
         to   { opacity: 1; }
-    }
-    #${SELECTION_BUBBLE_ID} {
-        animation-duration: 0.22s;
     }
 
     /* Host-driven dark mode — activated by the data-aitb-theme attribute we
