@@ -20,16 +20,88 @@ const DEFAULT_DURATION_MS = 420;
 // just render a clean copy that has nothing but conversation content.
 const PRINT_OVERLAY_ID = 'ai-chat-print-overlay';
 
-// Parent-page CSS is no longer used to style print output — the iframe
-// owns its own stylesheet. Keep an empty block for ensureStyle() so the
-// upsert logic stays consistent.
-const PRINT_OVERLAY_CSS = '';
+// CSS used by the "overlay" print strategy (Claude, Gemini). The cloned
+// conversation is placed inside the host document under this ID, and these
+// rules govern its on-screen preview + @media print output. ChatGPT uses a
+// separate "iframe" strategy because its page stylesheets interfere with
+// print rendering even through !important overrides.
+const PRINT_OVERLAY_CSS = `
+    #${PRINT_OVERLAY_ID} {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 2147483647 !important;
+        background: #ffffff !important;
+        color: #000 !important;
+        overflow: auto !important;
+        padding: 24px 40px !important;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+            "Helvetica Neue", "PingFang SC", "Hiragino Sans GB",
+            "Microsoft YaHei", sans-serif !important;
+        font-size: 14px !important;
+        line-height: 1.6 !important;
+    }
+    #${PRINT_OVERLAY_ID}::before {
+        content: "Preparing PDF — the print dialog will open in a moment…";
+        display: block;
+        padding: 8px 12px;
+        margin-bottom: 16px;
+        background: #F2F2F7;
+        border-radius: 8px;
+        font-size: 12px;
+        color: #666;
+    }
+    @media print {
+        #${PRINT_OVERLAY_ID}::before { display: none !important; }
+        body > *:not(#${PRINT_OVERLAY_ID}) { display: none !important; }
+        html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+            color: #000 !important;
+            height: auto !important;
+            overflow: visible !important;
+        }
+        #${PRINT_OVERLAY_ID} {
+            position: static !important;
+            inset: auto !important;
+            width: auto !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            padding: 0 !important;
+            font-size: 11pt !important;
+        }
+        #${PRINT_OVERLAY_ID} pre,
+        #${PRINT_OVERLAY_ID} table,
+        #${PRINT_OVERLAY_ID} blockquote {
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+        #${PRINT_OVERLAY_ID} h1, #${PRINT_OVERLAY_ID} h2,
+        #${PRINT_OVERLAY_ID} h3, #${PRINT_OVERLAY_ID} h4 {
+            break-after: avoid;
+            page-break-after: avoid;
+        }
+        #${PRINT_OVERLAY_ID} pre,
+        #${PRINT_OVERLAY_ID} code {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        #${PRINT_OVERLAY_ID} a[href^="http"]::after {
+            content: " (" attr(href) ")";
+            font-size: 9pt;
+            color: #555;
+        }
+        #${PRINT_OVERLAY_ID} img { max-width: 100% !important; height: auto !important; }
+    }
+`;
 
 const SITES = {
     gemini: {
         match: (host) => host.includes('gemini.google.com'),
         storageKey: 'geminiWidth',
         defaultWidth: 1200,
+        printStrategy: 'overlay',
         getPrintRoot: () =>
             document.querySelector('#chat-history') ||
             document.querySelector('infinite-scroller') ||
@@ -99,6 +171,7 @@ const SITES = {
         match: (host) => host.includes('claude.ai'),
         storageKey: 'claudeWidth',
         defaultWidth: 1000,
+        printStrategy: 'overlay',
         getPrintRoot: () => document.querySelector('[data-autoscroll-container="true"]'),
         css: `
             /* Claude layout is constrained by Tailwind's max-w-3xl (768px).
@@ -136,6 +209,9 @@ const SITES = {
         // color via CSS custom properties set on ancestors; once detached
         // from that chain, prose renders with unresolved variables and can
         // disappear. Rebuilding from scratch avoids any ancestor dependency.
+        // ChatGPT uses the iframe strategy — its page stylesheets interfere
+        // with the overlay approach even with maximal !important overrides.
+        printStrategy: 'iframe',
         getPrintRoot: () => {
             const turns = document.querySelectorAll('[data-message-author-role]');
             if (!turns.length) return null;
@@ -143,9 +219,8 @@ const SITES = {
             wrapper.setAttribute('data-ai-chat-print-root', 'chatgpt');
             // Rebuild each turn from scratch — iterate the live DOM and emit
             // new elements that carry only structural tags and text. This
-            // severs every possible style inheritance chain (Tailwind prose
-            // variables, oklch color palettes, gradient text tricks) that has
-            // been making paragraphs render invisible in earlier attempts.
+            // severs every possible style inheritance chain when transplanted
+            // into the isolated iframe document.
             for (const turn of turns) {
                 const clean = sanitizeToPrintable(turn);
                 if (!clean) continue;
@@ -604,10 +679,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 sendResponse({ ok: false, reason: 'no-conversation' });
                 return true;
             }
-            mountPrintOverlay(root);
+            mountPrintOverlay(root, site.printStrategy || 'overlay');
             sendResponse({ ok: true });
-            // mountPrintOverlay now owns the print timing — it calls print
-            // from inside the isolated iframe after a short layout delay.
+            // The chosen strategy (overlay or iframe) owns its own print
+            // timing and cleanup.
         } catch (e) {
             console.error('[AI Chat Width] PDF export failed:', e);
             unmountPrintOverlay();
@@ -682,13 +757,40 @@ function sanitizeToPrintable(src) {
     return out;
 }
 
-// Render the printable content in a fresh iframe document. The iframe gets
-// its own blank document with no inherited CSS from the host page, so the
-// print-media rendering isn't disturbed by the parent site's stylesheets
-// (ChatGPT's in particular had been hiding prose at print time even when
-// the on-screen overlay rendered fine).
-function mountPrintOverlay(root) {
+// Dispatch to the strategy the active site picked:
+//   - 'overlay': clone into host document under #print-overlay, use @media
+//                print to hide siblings. Works when the host's stylesheets
+//                don't fight the print output (Claude, Gemini).
+//   - 'iframe':  write content into a fresh iframe document, print from the
+//                iframe's own window. Required when host CSS interferes with
+//                printing overlay descendants (ChatGPT).
+function mountPrintOverlay(root, strategy) {
     unmountPrintOverlay();
+    if (strategy === 'iframe') mountPrintIframe(root);
+    else mountPrintInlineOverlay(root);
+}
+
+function mountPrintInlineOverlay(root) {
+    const overlay = document.createElement('div');
+    overlay.id = PRINT_OVERLAY_ID;
+    // Clone the rendered conversation subtree — this preserves KaTeX, tables,
+    // code highlighting, and images exactly as they look on screen.
+    overlay.appendChild(root.cloneNode(true));
+    document.body.appendChild(overlay);
+
+    const cleanup = () => {
+        window.removeEventListener('afterprint', cleanup);
+        unmountPrintOverlay();
+    };
+    window.addEventListener('afterprint', cleanup);
+    setTimeout(cleanup, 60000);
+
+    setTimeout(() => window.print(), 50);
+}
+
+// Render the printable content in a fresh iframe document. Used for sites
+// whose stylesheets break the simpler overlay strategy.
+function mountPrintIframe(root) {
     const iframe = document.createElement('iframe');
     iframe.id = PRINT_OVERLAY_ID;
     // Fullscreen fixed so user can see the preview before print dialog takes over.
