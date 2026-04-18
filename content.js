@@ -96,6 +96,16 @@ const PRINT_OVERLAY_CSS = `
         }
 
         #${PRINT_OVERLAY_ID} img { max-width: 100% !important; height: auto !important; }
+
+        /* Gap between synthetic ChatGPT turns (cloned out of their original
+           flow, so parent spacing no longer applies). */
+        #${PRINT_OVERLAY_ID} [data-ai-chat-print-root] > [data-message-author-role] {
+            margin: 12pt 0 !important;
+            padding-bottom: 8pt !important;
+        }
+        #${PRINT_OVERLAY_ID} [data-role="user"] {
+            font-weight: 500;
+        }
     }
 `;
 
@@ -205,12 +215,25 @@ const SITES = {
         match: (host) => host.includes('chatgpt.com') || host.includes('chat.openai.com'),
         storageKey: 'chatgptWidth',
         defaultWidth: 1000,
-        // ChatGPT's message turns live directly under <main> in a scrolled
-        // container; cloning the nearest common ancestor gives us every turn.
-        getPrintRoot: () =>
-            document.querySelector('main [class*="conversation"]') ||
-            document.querySelector('main div[class*="thread"]') ||
-            document.querySelector('main'),
+        // Build a synthetic root containing only message turns. Cloning the
+        // live main/thread container breaks because ChatGPT resolves text
+        // color via CSS custom properties set on ancestors; once detached
+        // from that chain, prose renders with unresolved variables and can
+        // disappear. Rebuilding from scratch avoids any ancestor dependency.
+        getPrintRoot: () => {
+            const turns = document.querySelectorAll('[data-message-author-role]');
+            if (!turns.length) return null;
+            const wrapper = document.createElement('div');
+            wrapper.setAttribute('data-ai-chat-print-root', 'chatgpt');
+            for (const turn of turns) {
+                const clone = turn.cloneNode(true);
+                // Label the role so per-turn spacing CSS can target it.
+                const role = turn.getAttribute('data-message-author-role') || '';
+                clone.setAttribute('data-role', role);
+                wrapper.appendChild(clone);
+            }
+            return wrapper;
+        },
         css: `
             /* ChatGPT drives both column and composer through --thread-content-max-width.
                Scoping to <section> restricts the override to message turns, keeping
