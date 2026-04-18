@@ -21,10 +21,35 @@ const DEFAULT_DURATION_MS = 420;
 const PRINT_OVERLAY_ID = 'ai-chat-print-overlay';
 
 const PRINT_OVERLAY_CSS = `
+    /* On-screen preview while we wait to call window.print(). Lets the user
+       see exactly what will be sent to the printer so they can tell whether
+       a missing-text problem is in the cloned content itself or only appears
+       once print media rules kick in. */
     #${PRINT_OVERLAY_ID} {
-        display: none;
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 2147483647 !important;
+        background: #ffffff !important;
+        color: #000 !important;
+        overflow: auto !important;
+        padding: 24px 40px !important;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif !important;
+        font-size: 14px !important;
+        line-height: 1.6 !important;
+    }
+    #${PRINT_OVERLAY_ID}::before {
+        content: "Preparing PDF — the print dialog will open in a moment…";
+        display: block;
+        padding: 8px 12px;
+        margin-bottom: 16px;
+        background: #F2F2F7;
+        border-radius: 8px;
+        font-size: 12px;
+        color: #666;
     }
     @media print {
+        /* Hide the preview banner when actually printing. */
+        #${PRINT_OVERLAY_ID}::before { display: none !important; }
         /* Hide the live page — only the overlay prints. */
         body > *:not(#${PRINT_OVERLAY_ID}) { display: none !important; }
 
@@ -706,9 +731,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
             mountPrintOverlay(root);
             sendResponse({ ok: true });
-            // Give the browser a beat to lay out the overlay before opening
-            // the print dialog. window.print() blocks the page until dismissed.
-            setTimeout(() => window.print(), 50);
+            // Short delay so you can visually confirm the cloned conversation
+            // appears correctly on screen before the print dialog takes over.
+            // If text is missing on screen too, the issue is in the clone.
+            // If text shows on screen but not in print, it's a print-CSS issue.
+            setTimeout(() => window.print(), 1500);
         } catch (e) {
             console.error('[AI Chat Width] PDF export failed:', e);
             unmountPrintOverlay();
