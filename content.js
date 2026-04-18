@@ -887,23 +887,103 @@ function unmountPrintOverlay() {
 
 const BOOKMARKS_PANEL_ID = 'ai-toolbox-bookmarks-panel';
 const BOOKMARKS_STATE_KEY = 'bookmarksPanelCollapsed';
-const BOOKMARKS_SUPPORTED_SITES = new Set(['chatgptWidth']);
 const BOOKMARKS_STORAGE_PREFIX = 'bookmarks:';
 
-function bookmarksSupportedForCurrentSite() {
-    return !!site && BOOKMARKS_SUPPORTED_SITES.has(site.storageKey);
+// Per-site adapters for bookmarking. Each adapter encapsulates everything the
+// bookmark engine needs to know about the host page's DOM: how to extract a
+// conversation identifier from the URL, how to enumerate messages, how to
+// locate a specific message (including graceful fallbacks when the host lacks
+// stable per-message IDs). Adding a new site means adding an entry here —
+// the rest of the bookmark code stays host-agnostic.
+const BOOKMARK_SITES = {
+    chatgptWidth: {
+        // /c/{uuid} is the canonical URL shape; /g/{id}/c/{uuid} (custom GPTs)
+        // also exposes the same terminal segment, so we pick the last match.
+        getConversationId: () => {
+            const m = location.pathname.match(/\/c\/([0-9a-f-]+)/i);
+            return m ? m[1] : null;
+        },
+        messageSelector: '[data-message-id]',
+        findMessageElement: (target) => target.closest?.('[data-message-id]') ?? null,
+        // ChatGPT has a stable per-message id, so we key bookmarks on it and
+        // ignore the index/hash fallback path.
+        getMessageKey: (el) => ({
+            messageId: el.getAttribute('data-message-id'),
+            role: el.getAttribute('data-message-author-role') === 'user' ? 'user' : 'assistant',
+        }),
+        findMessageByKey: (key) => {
+            if (!key?.messageId) return null;
+            return document.querySelector(`[data-message-id="${CSS.escape(key.messageId)}"]`);
+        },
+    },
+
+    claudeWidth: {
+        // Claude URLs look like /chat/{uuid}. New drafts at /new have no id.
+        getConversationId: () => {
+            const m = location.pathname.match(/\/chat\/([0-9a-f-]+)/i);
+            return m ? m[1] : null;
+        },
+        // Both user turns and assistant responses — iterate in DOM order to
+        // preserve conversation sequence when indexing.
+        messageSelector: '[data-testid="user-message"], .font-claude-response',
+        findMessageElement: (target) =>
+            target.closest?.('[data-testid="user-message"], .font-claude-response') ?? null,
+        // No stable id on Claude. Store index + text hash so we can rematch
+        // when the DOM re-renders or bookmarks outlive a regenerated answer.
+        getMessageKey: (el) => {
+            const all = Array.from(document.querySelectorAll(
+                '[data-testid="user-message"], .font-claude-response'
+            ));
+            const index = all.indexOf(el);
+            const role = el.matches('[data-testid="user-message"]') ? 'user' : 'assistant';
+            const text = (el.innerText || el.textContent || '').trim();
+            return { messageIndex: index, textHash: hashText(text), role };
+        },
+        findMessageByKey: (key) => {
+            if (!key) return null;
+            const all = Array.from(document.querySelectorAll(
+                '[data-testid="user-message"], .font-claude-response'
+            ));
+            // Prefer exact index, verify by hash match. If hash drifted, fall
+            // back to a hash scan (answer regenerated, indexes shifted).
+            const atIndex = all[key.messageIndex];
+            if (atIndex) {
+                const text = (atIndex.innerText || atIndex.textContent || '').trim();
+                if (!key.textHash || hashText(text) === key.textHash) return atIndex;
+            }
+            if (key.textHash) {
+                for (const el of all) {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    if (hashText(text) === key.textHash) return el;
+                }
+            }
+            return atIndex ?? null;
+        },
+    },
+};
+
+// Fast non-cryptographic hash (djb2). Used only to detect "is this the same
+// message content" — collisions are harmless because they'd just cause a
+// scroll to the wrong message, and we also carry an index as a primary key.
+function hashText(s) {
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) {
+        h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    }
+    return String(h);
 }
 
-// Extract the conversation identifier the active site exposes in the URL.
-// ChatGPT uses /c/{uuid}; a brand-new conversation without an id yet returns
-// null, which the panel treats as "no bookmarks storage available yet".
+function currentAdapter() {
+    return site ? BOOKMARK_SITES[site.storageKey] ?? null : null;
+}
+
+function bookmarksSupportedForCurrentSite() {
+    return !!currentAdapter();
+}
+
 function getConversationId() {
-    if (!site) return null;
-    if (site.storageKey === 'chatgptWidth') {
-        const m = location.pathname.match(/^\/c\/([0-9a-f-]+)/i);
-        return m ? m[1] : null;
-    }
-    return null;
+    const a = currentAdapter();
+    return a ? a.getConversationId() : null;
 }
 
 function bookmarksStorageKey(convId) {
@@ -1030,12 +1110,12 @@ function attachBookmarkContextMenu() {
 
 const BOOKMARK_MENU_ID = 'ai-toolbox-bookmark-menu';
 
-// Find the nearest ChatGPT message container. data-message-id is on the
-// element that wraps a single turn; data-message-author-role lives on the
-// same node and tells us user vs assistant.
+// Delegate to the site adapter so each host's per-message container selector
+// lives in one place.
 function findMessageElement(node) {
     if (!(node instanceof Element)) return null;
-    return node.closest('[data-message-id]');
+    const a = currentAdapter();
+    return a ? a.findMessageElement(node) : null;
 }
 
 function openBookmarkMenu(x, y, ctx) {
@@ -1070,21 +1150,19 @@ function closeBookmarkMenu() {
 
 async function addMessageBookmark(msgEl) {
     const convId = getConversationId();
-    if (!convId) return;
-    const messageId = msgEl.getAttribute('data-message-id');
-    const role = msgEl.getAttribute('data-message-author-role') === 'user' ? 'user' : 'assistant';
+    const adapter = currentAdapter();
+    if (!convId || !adapter) return;
+    const key = adapter.getMessageKey(msgEl);
     const text = (msgEl.innerText || msgEl.textContent || '').trim().replace(/\s+/g, ' ');
     const snippet = text.length > 200 ? text.slice(0, 200) + '…' : text;
 
-    // Optional note — prompt() is deliberate for the MVP; a proper inline
-    // editor lands in stage 5 along with delete/edit affordances.
     const note = window.prompt('Optional note for this bookmark:', '') || '';
 
     const bookmark = {
         id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
-        messageId,
-        role,
+        key,
+        role: key.role,
         snippet,
         note: note.trim(),
     };
@@ -1098,17 +1176,17 @@ async function addMessageBookmark(msgEl) {
 
 async function addSelectionBookmark(msgEl, selectionText) {
     const convId = getConversationId();
-    if (!convId) return;
-    const messageId = msgEl.getAttribute('data-message-id');
-    const role = msgEl.getAttribute('data-message-author-role') === 'user' ? 'user' : 'assistant';
+    const adapter = currentAdapter();
+    if (!convId || !adapter) return;
+    const key = adapter.getMessageKey(msgEl);
     const note = window.prompt('Optional note for this selection:', '') || '';
     const trimmed = selectionText.replace(/\s+/g, ' ').trim();
 
     const bookmark = {
         id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
-        messageId,
-        role,
+        key,
+        role: key.role,
         snippet: trimmed.length > 200 ? trimmed.slice(0, 200) + '…' : trimmed,
         note: note.trim(),
         selection: { text: trimmed },
@@ -1121,19 +1199,21 @@ async function addSelectionBookmark(msgEl, selectionText) {
     setPanelCollapsed(false);
 }
 
-// Locate a message node in the DOM. ChatGPT sometimes re-renders messages
-// (regenerate response, edit), so a saved data-message-id may not currently
-// be mounted. Return null in that case — caller decides how to handle.
-function findMessageById(messageId) {
-    if (!messageId) return null;
-    return document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+// Resolve a bookmark's stored key back to a live DOM node. Handles legacy
+// ChatGPT bookmarks that stored { messageId } directly alongside the newer
+// adapter-based { key } shape.
+function findMessageFromBookmark(bm) {
+    const adapter = currentAdapter();
+    if (!adapter) return null;
+    const key = bm.key ?? (bm.messageId ? { messageId: bm.messageId } : null);
+    return key ? adapter.findMessageByKey(key) : null;
 }
 
 // Scroll the message into view, then (if the bookmark captured a selection)
 // walk the text nodes inside the message to find that substring and visually
 // highlight the matching range for ~2s.
 function scrollToBookmark(bm) {
-    const msgEl = findMessageById(bm.messageId);
+    const msgEl = findMessageFromBookmark(bm);
     if (!msgEl) {
         // Message currently unmounted (virtualization) or removed. Best
         // effort: do nothing. A future stage could trigger site-specific
