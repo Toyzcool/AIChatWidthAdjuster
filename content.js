@@ -714,8 +714,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 function stripStyling(root, preservePattern) {
     const walk = (el) => {
         if (el.nodeType !== 1) return;
-        if (el.hasAttribute('class')) {
-            const keep = el.className.split(/\s+/).filter(c => preservePattern.test(c));
+        // Use getAttribute instead of .className — SVG elements (KaTeX emits
+        // them) expose className as a SVGAnimatedString, not a plain string.
+        const classAttr = el.getAttribute('class');
+        if (classAttr) {
+            const keep = classAttr.split(/\s+/).filter(c => c && preservePattern.test(c));
             if (keep.length) el.setAttribute('class', keep.join(' '));
             else el.removeAttribute('class');
         }
