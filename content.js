@@ -889,6 +889,72 @@ const BOOKMARKS_PANEL_ID = 'ai-toolbox-bookmarks-panel';
 const BOOKMARKS_STATE_KEY = 'bookmarksPanelCollapsed';
 const BOOKMARKS_STORAGE_PREFIX = 'bookmarks:';
 
+// Both ChatGPT and Claude toggle dark mode by adding a `dark` class to the
+// <html> element. We mirror that onto our panel + bubble via a data attribute
+// so our styles can follow the host theme instead of the OS-level
+// prefers-color-scheme, which drifts when the user overrides the site theme.
+const THEME_ATTR = 'data-aitb-theme';
+
+// Theme detection prefers actual rendered luminance over class-sniffing:
+// ChatGPT uses <html class="dark">, Claude's structure is more nuanced and
+// may not expose a single toggle attribute. Reading the computed background
+// of <body> side-steps all of that — if the page renders a dark background
+// we pick dark, period. Falls back to class markers and prefers-color-scheme
+// only when body has no resolved background (e.g. before first paint).
+function detectHostTheme() {
+    const body = document.body;
+    if (body) {
+        const bg = getComputedStyle(body).backgroundColor;
+        const lum = bgLuminance(bg);
+        if (lum !== null) return lum < 0.5 ? 'dark' : 'light';
+    }
+    const root = document.documentElement;
+    if (root.classList.contains('dark')) return 'dark';
+    if (root.classList.contains('light')) return 'light';
+    const dataTheme = root.getAttribute('data-theme');
+    if (dataTheme === 'dark' || dataTheme === 'light') return dataTheme;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+// Parse rgb()/rgba()/hex color strings and return perceived luminance in
+// [0, 1]. Returns null for fully transparent or unrecognized values so the
+// caller can fall through to other heuristics.
+function bgLuminance(str) {
+    if (!str) return null;
+    const m = str.match(/rgba?\(([^)]+)\)/i);
+    if (!m) return null;
+    const parts = m[1].split(',').map(s => parseFloat(s.trim()));
+    const [r, g, b, a = 1] = parts;
+    if (!Number.isFinite(r) || a === 0) return null;
+    // Rec. 601 luma — good enough for a dark/light branch.
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+function applyHostTheme() {
+    const theme = detectHostTheme();
+    const panel = document.getElementById(BOOKMARKS_PANEL_ID);
+    if (panel) panel.setAttribute(THEME_ATTR, theme);
+    const bubble = document.getElementById(SELECTION_BUBBLE_ID);
+    if (bubble) bubble.setAttribute(THEME_ATTR, theme);
+}
+
+function watchHostTheme() {
+    applyHostTheme();
+    // Watch both <html> and <body> — ChatGPT toggles class on html, Claude
+    // sometimes swaps wrapper styles that ripple up to body. A background
+    // change on either triggers a luminance re-check.
+    const observer = new MutationObserver(applyHostTheme);
+    observer.observe(document.documentElement, {
+        attributes: true, attributeFilter: ['class', 'data-theme', 'style'],
+    });
+    if (document.body) {
+        observer.observe(document.body, {
+            attributes: true, attributeFilter: ['class', 'data-theme', 'style'],
+        });
+    }
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyHostTheme);
+}
+
 // Per-site adapters for bookmarking. Each adapter encapsulates everything the
 // bookmark engine needs to know about the host page's DOM: how to extract a
 // conversation identifier from the URL, how to enumerate messages, how to
@@ -1059,7 +1125,7 @@ function mountBookmarksPanel() {
     });
 
     refreshBookmarkList();
-    onUrlChange(refreshBookmarkList);
+    onUrlChange(() => { pruneNonSelectionBookmarks(); refreshBookmarkList(); });
 
     // Storage-level updates from another tab or future in-page writes should
     // re-render immediately so bookmarks stay in sync without a manual reload.
@@ -1069,46 +1135,10 @@ function mountBookmarksPanel() {
         if (convId && changes[bookmarksStorageKey(convId)]) refreshBookmarkList();
     });
 
-    attachBookmarkContextMenu();
+    attachSelectionBubble();
+    pruneNonSelectionBookmarks();
+    watchHostTheme();
 }
-
-// Wire a capture-phase contextmenu listener so we can pre-empt the page's
-// own handlers when the click lands inside a message. Falls through to the
-// native menu in every other case.
-function attachBookmarkContextMenu() {
-    document.addEventListener('contextmenu', (e) => {
-        const msgEl = findMessageElement(e.target);
-        if (!msgEl) return;
-        const sel = window.getSelection();
-        const selectedText = sel ? sel.toString().trim() : '';
-
-        // If the click didn't land inside the selection, treat it as a
-        // whole-message right-click even when text is selected elsewhere.
-        let inSelection = false;
-        if (selectedText && sel.rangeCount) {
-            const range = sel.getRangeAt(0);
-            inSelection = range.intersectsNode(e.target) || msgEl.contains(range.commonAncestorContainer);
-        }
-
-        e.preventDefault();
-        if (selectedText && inSelection) {
-            openBookmarkMenu(e.clientX, e.clientY, {
-                kind: 'selection', el: msgEl, text: selectedText,
-            });
-        } else {
-            openBookmarkMenu(e.clientX, e.clientY, { kind: 'message', el: msgEl });
-        }
-    }, true);
-
-    // Any left click dismisses an open menu.
-    document.addEventListener('click', (e) => {
-        const menu = document.getElementById(BOOKMARK_MENU_ID);
-        if (menu && !menu.contains(e.target)) closeBookmarkMenu();
-    }, true);
-    document.addEventListener('scroll', closeBookmarkMenu, true);
-}
-
-const BOOKMARK_MENU_ID = 'ai-toolbox-bookmark-menu';
 
 // Delegate to the site adapter so each host's per-message container selector
 // lives in one place.
@@ -1118,60 +1148,141 @@ function findMessageElement(node) {
     return a ? a.findMessageElement(node) : null;
 }
 
-function openBookmarkMenu(x, y, ctx) {
-    closeBookmarkMenu();
-    const menu = document.createElement('div');
-    menu.id = BOOKMARK_MENU_ID;
-    const label = ctx.kind === 'selection' ? 'Bookmark selected text' : 'Bookmark this message';
-    menu.innerHTML = `
-        <button type="button" data-action="add">
+// Floating "Bookmark selection" bubble — appears near the current selection
+// whenever the user has highlighted text inside a supported message. Clicks
+// anywhere else, scroll, or a cleared selection dismisses it. The browser's
+// native right-click menu stays untouched — this feature is the sole path
+// for creating bookmarks now that context-menu capture was removed.
+const SELECTION_BUBBLE_ID = 'ai-toolbox-selection-bubble';
+
+// Delay between a stable (non-empty) selection and the bubble appearing.
+// Gives the user time to finish refining the selection without the pill
+// jittering into view mid-drag.
+const BUBBLE_DELAY_MS = 500;
+
+function attachSelectionBubble() {
+    let pendingTimer = null;
+    const cancelPending = () => {
+        if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    };
+    const onSelectionChange = () => {
+        const sel = window.getSelection();
+        // Any empty/cleared selection dismisses immediately — no delay,
+        // otherwise the bubble would still appear after the user clicked
+        // away to deselect.
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+            cancelPending();
+            dismissSelectionBubble();
+            return;
+        }
+        // Any movement while the user is still selecting resets the timer,
+        // so the bubble only lands 500ms after the selection stops changing.
+        cancelPending();
+        pendingTimer = setTimeout(() => { pendingTimer = null; maybeShowBubble(); }, BUBBLE_DELAY_MS);
+    };
+
+    document.addEventListener('selectionchange', onSelectionChange);
+    document.addEventListener('scroll', () => {
+        cancelPending();
+        dismissSelectionBubble();
+    }, true);
+    document.addEventListener('mousedown', (e) => {
+        const bubble = document.getElementById(SELECTION_BUBBLE_ID);
+        if (bubble && bubble.contains(e.target)) return;
+        // Starting a new drag-select dismisses the old pill — the new one
+        // will show 500ms after the new selection settles.
+        cancelPending();
+        dismissSelectionBubble();
+    }, true);
+}
+
+function maybeShowBubble() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) {
+        dismissSelectionBubble();
+        return;
+    }
+    const text = sel.toString().trim();
+    if (!text) { dismissSelectionBubble(); return; }
+
+    const range = sel.getRangeAt(0);
+    // Only surface the bubble when the selection lives inside a message node
+    // of a supported site — selecting in the composer or elsewhere stays
+    // untouched.
+    const anchor = range.commonAncestorContainer.nodeType === 1
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+    const msgEl = anchor && findMessageElement(anchor);
+    if (!msgEl) { dismissSelectionBubble(); return; }
+
+    renderSelectionBubble(range, msgEl, text);
+}
+
+function renderSelectionBubble(range, msgEl, text) {
+    let bubble = document.getElementById(SELECTION_BUBBLE_ID);
+    if (!bubble) {
+        bubble = document.createElement('button');
+        bubble.id = SELECTION_BUBBLE_ID;
+        bubble.type = 'button';
+        bubble.innerHTML = `
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
             </svg>
-            <span>${label}</span>
-        </button>
-    `;
-    menu.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
-    menu.style.top = `${Math.min(y, window.innerHeight - 60)}px`;
-    document.body.appendChild(menu);
-
-    menu.querySelector('[data-action="add"]').addEventListener('click', async () => {
-        closeBookmarkMenu();
-        if (ctx.kind === 'selection') await addSelectionBookmark(ctx.el, ctx.text);
-        else await addMessageBookmark(ctx.el);
-    });
-}
-
-function closeBookmarkMenu() {
-    const menu = document.getElementById(BOOKMARK_MENU_ID);
-    if (menu) menu.remove();
-}
-
-async function addMessageBookmark(msgEl) {
-    const convId = getConversationId();
-    const adapter = currentAdapter();
-    if (!convId || !adapter) return;
-    const key = adapter.getMessageKey(msgEl);
-    const text = (msgEl.innerText || msgEl.textContent || '').trim().replace(/\s+/g, ' ');
-    const snippet = text.length > 200 ? text.slice(0, 200) + '…' : text;
-
-    const note = window.prompt('Optional note for this bookmark:', '') || '';
-
-    const bookmark = {
-        id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        createdAt: Date.now(),
-        key,
-        role: key.role,
-        snippet,
-        note: note.trim(),
+            <span>Bookmark</span>
+        `;
+        // mousedown preventDefault keeps the text selection intact — otherwise
+        // clicking the bubble would deselect, which would dismiss the bubble
+        // before the click handler fires.
+        bubble.addEventListener('mousedown', (e) => e.preventDefault());
+        document.body.appendChild(bubble);
+        // Apply the current host theme immediately so the first paint is
+        // correct — the MutationObserver only catches subsequent changes.
+        applyHostTheme();
+    }
+    // Re-bind the click each render so we capture the current {msgEl, text}.
+    bubble.onclick = async () => {
+        dismissSelectionBubble();
+        await addSelectionBookmark(msgEl, text);
     };
 
-    loadBookmarks(convId, (existing) => {
-        saveBookmarks(convId, [...existing, bookmark]);
-    });
+    const rect = range.getBoundingClientRect();
+    const bubbleRect = bubble.getBoundingClientRect();
+    // Host sites (ChatGPT, Claude) put their own selection UI above the
+    // selection — Reply/Quote buttons etc. Prefer placing ours BELOW so we
+    // don't visually collide with or occlude those controls. Only flip to
+    // above when the bubble would fall off the bottom of the viewport.
+    const gap = 10;
+    const fitsBelow = rect.bottom + bubbleRect.height + gap <= window.innerHeight;
+    const top = fitsBelow ? rect.bottom + gap : rect.top - bubbleRect.height - gap;
+    // Nudge horizontally so the bubble's center doesn't overlap the
+    // selection's center — offset 60px right keeps it clear of any native
+    // pill that might also center on the selection.
+    const desired = rect.left + rect.width / 2 - bubbleRect.width / 2 + 60;
+    const left = Math.max(8, Math.min(
+        window.innerWidth - bubbleRect.width - 8,
+        desired
+    ));
+    bubble.style.top = `${top}px`;
+    bubble.style.left = `${left}px`;
+    bubble.setAttribute('data-visible', 'true');
+}
 
-    setPanelCollapsed(false);
+function dismissSelectionBubble() {
+    const bubble = document.getElementById(SELECTION_BUBBLE_ID);
+    if (bubble) bubble.remove();
+}
+
+// Drop any previously-saved whole-message bookmarks (pre-3.2 or earlier
+// selection-less captures) so the panel only shows items we can still
+// create going forward. Runs once per conversation load.
+function pruneNonSelectionBookmarks() {
+    const convId = getConversationId();
+    if (!convId) return;
+    loadBookmarks(convId, (existing) => {
+        const filtered = existing.filter(b => b.selection && b.selection.text);
+        if (filtered.length !== existing.length) saveBookmarks(convId, filtered);
+    });
 }
 
 async function addSelectionBookmark(msgEl, selectionText) {
@@ -1601,77 +1712,68 @@ const BOOKMARKS_CSS = `
         100% { background: transparent; }
     }
 
-    #${BOOKMARK_MENU_ID} {
+    #${SELECTION_BUBBLE_ID} {
         position: fixed;
         z-index: 2147483647;
-        min-width: 200px;
-        padding: 4px;
-        background: rgba(255, 255, 255, 0.98);
-        border-radius: 10px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-        font-size: 13px;
-        color: #1d1d1f;
-        animation: aitb-menu-in 0.12s ease-out;
-    }
-    @keyframes aitb-menu-in {
-        from { opacity: 0; transform: translateY(-4px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    #${BOOKMARK_MENU_ID} button {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        gap: 8px;
-        width: 100%;
-        padding: 8px 10px;
-        background: transparent;
+        gap: 6px;
+        padding: 6px 12px;
+        background: #1d1d1f;
+        color: #ffffff;
         border: none;
-        border-radius: 6px;
-        color: inherit;
-        font: inherit;
-        text-align: left;
+        border-radius: 999px;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.12);
         cursor: pointer;
-        transition: background 0.1s ease;
+        animation: aitb-bubble-in 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+        user-select: none;
     }
-    #${BOOKMARK_MENU_ID} button:hover { background: rgba(0, 122, 255, 0.12); }
-
-    @media (prefers-color-scheme: dark) {
-        #${BOOKMARK_MENU_ID} {
-            background: rgba(44, 44, 46, 0.98);
-            color: rgba(255, 255, 255, 0.92);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-        }
-        #${BOOKMARK_MENU_ID} button:hover { background: rgba(10, 132, 255, 0.22); }
+    #${SELECTION_BUBBLE_ID}:hover { background: #000000; }
+    #${SELECTION_BUBBLE_ID}:active { opacity: 0.85; }
+    /* Pure opacity fade with a soft ease-out curve. Duration is set inline
+       on the bubble itself (see the main #${SELECTION_BUBBLE_ID} rule above)
+       so the feel stays consistent if we ever tune timing. */
+    @keyframes aitb-bubble-in {
+        from { opacity: 0; }
+        to   { opacity: 1; }
     }
 
-    @media (prefers-color-scheme: dark) {
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-toggle {
-            background: rgba(44, 44, 46, 0.9);
-            color: rgba(255, 255, 255, 0.92);
-        }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-body {
-            background: rgba(28, 28, 30, 0.96);
-            border-left-color: rgba(255, 255, 255, 0.08);
-        }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-title { color: rgba(255, 255, 255, 0.95); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-header { border-bottom-color: rgba(255, 255, 255, 0.08); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse { color: rgba(235, 235, 245, 0.5); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-collapse:hover { background: rgba(255, 255, 255, 0.06); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-empty { color: rgba(235, 235, 245, 0.45); }
+    /* Host-driven dark mode — activated by the data-aitb-theme attribute we
+       mirror from <html class="dark"> via MutationObserver. */
+    #${SELECTION_BUBBLE_ID}[${THEME_ATTR}="dark"] {
+        background: #f5f5f7;
+        color: #1d1d1f;
+    }
+    #${SELECTION_BUBBLE_ID}[${THEME_ATTR}="dark"]:hover { background: #ffffff; }
 
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-item { background: rgba(255, 255, 255, 0.04); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-item:hover { background: rgba(255, 255, 255, 0.08); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-item-role { color: rgba(235, 235, 245, 0.45); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-act { color: rgba(235, 235, 245, 0.55); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-act:hover { background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.95); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-item-body { color: rgba(255, 255, 255, 0.92); }
-        #${BOOKMARKS_PANEL_ID} .aitb-bm-note {
-            color: rgba(235, 235, 245, 0.72);
-            background: rgba(10, 132, 255, 0.14);
-            border-left-color: rgba(10, 132, 255, 0.5);
-        }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-toggle {
+        background: rgba(44, 44, 46, 0.9);
+        color: rgba(255, 255, 255, 0.92);
+    }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-body {
+        background: rgba(28, 28, 30, 0.96);
+        border-left-color: rgba(255, 255, 255, 0.08);
+    }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-title { color: rgba(255, 255, 255, 0.95); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-header { border-bottom-color: rgba(255, 255, 255, 0.08); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-collapse { color: rgba(235, 235, 245, 0.5); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-collapse:hover { background: rgba(255, 255, 255, 0.06); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-empty { color: rgba(235, 235, 245, 0.45); }
+
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-item { background: rgba(255, 255, 255, 0.04); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-item:hover { background: rgba(255, 255, 255, 0.08); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-item-role { color: rgba(235, 235, 245, 0.45); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-act { color: rgba(235, 235, 245, 0.55); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-act:hover { background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.95); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-item-body { color: rgba(255, 255, 255, 0.92); }
+    #${BOOKMARKS_PANEL_ID}[${THEME_ATTR}="dark"] .aitb-bm-note {
+        color: rgba(235, 235, 245, 0.72);
+        background: rgba(10, 132, 255, 0.14);
+        border-left-color: rgba(10, 132, 255, 0.5);
     }
 `;
 
