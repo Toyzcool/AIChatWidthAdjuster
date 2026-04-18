@@ -57,7 +57,18 @@ const PRINT_OVERLAY_CSS = `
             max-height: none !important;
             overflow: visible !important;
             color: #000 !important;
+            /* Some sites (ChatGPT streaming prose) render text via
+               -webkit-text-fill-color: transparent + background-clip: text
+               for gradient effects. That property overrides 'color', so
+               paragraphs come out invisible unless we reset it explicitly. */
+            -webkit-text-fill-color: #000 !important;
             background: transparent !important;
+            background-image: none !important;
+            -webkit-background-clip: border-box !important;
+            background-clip: border-box !important;
+            text-shadow: none !important;
+            opacity: 1 !important;
+            visibility: visible !important;
         }
 
         /* Hide any interactive chrome that the clone inherited. Do NOT hide
