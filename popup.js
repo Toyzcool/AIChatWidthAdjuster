@@ -78,6 +78,11 @@ function tweenSliderTo(siteId, target) {
 function showPanel(siteId) {
     tabBtns.forEach(btn => btn.classList.toggle('active', btn.dataset.site === siteId));
     panels.forEach(p => { p.hidden = p.dataset.panel !== siteId; });
+    // Show site-specific export cards only when the active tab matches. Export
+    // is wired per-site; cards without an extractor stay hidden.
+    document.querySelectorAll('[data-export-for]').forEach(card => {
+        card.hidden = card.dataset.exportFor !== siteId;
+    });
 }
 
 // Wire slider + preset + tab events for each site.
@@ -110,6 +115,45 @@ tabBtns.forEach(btn => {
 
 wrapToggle.addEventListener('change', () => {
     chrome.storage.local.set({ codeAutoWrap: wrapToggle.checked });
+});
+
+// Export: ask the active tab's content script to build the MD and trigger
+// the download in-page (content script has direct DOM + blob URL access).
+const exportBtn = document.getElementById('exportMdBtn');
+const exportStatus = document.getElementById('exportStatus');
+
+function setExportStatus(text, kind) {
+    exportStatus.textContent = text;
+    exportStatus.classList.toggle('error', kind === 'error');
+    exportStatus.classList.toggle('success', kind === 'success');
+}
+
+exportBtn.addEventListener('click', () => {
+    exportBtn.disabled = true;
+    setExportStatus('Exporting…');
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tab = tabs[0];
+        if (!tab) {
+            exportBtn.disabled = false;
+            setExportStatus('No active tab.', 'error');
+            return;
+        }
+        chrome.tabs.sendMessage(tab.id, { type: 'export-markdown' }, (resp) => {
+            exportBtn.disabled = false;
+            if (chrome.runtime.lastError || !resp) {
+                setExportStatus('Reload the Claude tab and try again.', 'error');
+                return;
+            }
+            if (resp.ok) {
+                setExportStatus('Downloaded.', 'success');
+                setTimeout(() => setExportStatus(''), 2500);
+            } else if (resp.reason === 'no-conversation') {
+                setExportStatus('No conversation found on this page.', 'error');
+            } else {
+                setExportStatus('Export failed.', 'error');
+            }
+        });
+    });
 });
 
 // Detect active tab's site, then load all widths + wrap preference.

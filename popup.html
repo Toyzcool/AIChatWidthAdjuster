@@ -319,6 +319,35 @@
 
     .support-link:hover { background: var(--system-blue-pressed); }
     .support-link:active { transform: scale(0.97); }
+
+    /* Export */
+    .export-btn {
+      width: 100%;
+      padding: 9px 0;
+      background: var(--system-blue);
+      color: #FFFFFF;
+      border: none;
+      border-radius: var(--radius-control);
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      letter-spacing: -0.01em;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.08s ease, opacity 0.15s ease;
+    }
+    .export-btn:hover:not(:disabled) { background: var(--system-blue-pressed); }
+    .export-btn:active:not(:disabled) { transform: scale(0.98); }
+    .export-btn:disabled { opacity: 0.45; cursor: default; }
+
+    .export-status {
+      margin-top: 8px;
+      font-size: 11px;
+      text-align: center;
+      color: var(--label-secondary);
+      min-height: 14px;
+    }
+    .export-status.error { color: #FF3B30; }
+    .export-status.success { color: #34C759; }
   </style>
 </head>
 <body>
@@ -384,6 +413,11 @@
       <input type="checkbox" id="wrapToggle">
       <span class="toggle-switch"></span>
     </label>
+  </div>
+
+  <div class="card" data-export-for="claude" hidden>
+    <button class="export-btn" id="exportMdBtn">Export Conversation as Markdown</button>
+    <div class="export-status" id="exportStatus"></div>
   </div>
 
   <div class="card">
