@@ -1414,25 +1414,17 @@ function scrollToBookmark(bm) {
     flashHighlightRange(range);
 }
 
-// Scroll the viewport so the range is vertically centered, using the range's
-// own bounding rect. Doing the scroll based on the range (not the message
-// container) is what makes jumps precise even when the selection starts with
-// a heading or crosses block boundaries — those cases used to land at the
-// message's center, which is often far from the actual selection.
+// Scroll so the range's starting element lands centered in the viewport.
+// Element.scrollIntoView walks every scrollable ancestor, which is what we
+// need for ChatGPT/Claude/Gemini (all three scroll inside an internal
+// overflow container, not the document). Targeting the start element keeps
+// cross-boundary selections (heading + paragraph) landing on the heading
+// rather than the message's geometric center.
 function scrollRangeIntoView(range) {
-    const rect = range.getBoundingClientRect();
-    if (!rect || (rect.width === 0 && rect.height === 0)) {
-        // Zero-size rects happen when the range starts at a node boundary
-        // with no laid-out content — fall back to scrolling the start node.
-        const start = range.startContainer.nodeType === 1
-            ? range.startContainer
-            : range.startContainer.parentElement;
-        start?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return;
-    }
-    const absoluteTop = rect.top + window.scrollY;
-    const target = absoluteTop - (window.innerHeight / 2) + (rect.height / 2);
-    window.scrollTo({ top: target, behavior: 'smooth' });
+    const start = range.startContainer.nodeType === 1
+        ? range.startContainer
+        : range.startContainer.parentElement;
+    start?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 // Full-message flash — used when no selection was captured or re-location
