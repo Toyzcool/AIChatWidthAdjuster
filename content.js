@@ -1414,17 +1414,60 @@ function scrollToBookmark(bm) {
     flashHighlightRange(range);
 }
 
-// Scroll so the range's starting element lands centered in the viewport.
-// Element.scrollIntoView walks every scrollable ancestor, which is what we
-// need for ChatGPT/Claude/Gemini (all three scroll inside an internal
-// overflow container, not the document). Targeting the start element keeps
-// cross-boundary selections (heading + paragraph) landing on the heading
-// rather than the message's geometric center.
+// Scroll the range into view. ChatGPT and Claude center the start element via
+// Element.scrollIntoView, which is accurate because their prose is either
+// structured in short inline wrappers or per-sentence spans — centering the
+// immediate parent lands on the selection.
+//
+// Gemini's model-response uses long <p>/<h*> blocks, so centering the
+// parent element centers the WHOLE paragraph and misses the selection
+// start when it's near the top of a long block. For Gemini we instead
+// compute the scroll target from the range's bounding rect relative to
+// the internal scroll container — pixel-accurate regardless of block size.
 function scrollRangeIntoView(range) {
+    if (site?.storageKey === 'geminiWidth') {
+        scrollRangeIntoViewPrecise(range);
+        return;
+    }
     const start = range.startContainer.nodeType === 1
         ? range.startContainer
         : range.startContainer.parentElement;
     start?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// Walk up the ancestor chain to find the first element that actually scrolls.
+// Gemini's chat content lives inside infinite-scroller which exposes a
+// vertically-scrollable overflow — we want scrollTop manipulation on THAT
+// node, not on document.documentElement (which is overflow: hidden here).
+function findScrollContainer(el) {
+    let cur = el;
+    while (cur && cur !== document.body) {
+        const style = getComputedStyle(cur);
+        const oy = style.overflowY;
+        if ((oy === 'auto' || oy === 'scroll') && cur.scrollHeight > cur.clientHeight) {
+            return cur;
+        }
+        cur = cur.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+}
+
+function scrollRangeIntoViewPrecise(range) {
+    const start = range.startContainer.nodeType === 1
+        ? range.startContainer
+        : range.startContainer.parentElement;
+    if (!start) return;
+    const container = findScrollContainer(start);
+    const rangeRect = range.getBoundingClientRect();
+    const containerRect = container === document.documentElement
+        ? { top: 0, height: window.innerHeight }
+        : container.getBoundingClientRect();
+    // Desired final position: range's top sits at 1/4 from container top so
+    // we see both the selection start and a bit of context below. Using the
+    // actual rect (not the parent element) means the scroll is precise even
+    // when the selection begins near the bottom of a long block.
+    const delta = rangeRect.top - containerRect.top - containerRect.height * 0.25;
+    container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' });
 }
 
 // Full-message flash — used when no selection was captured or re-location
