@@ -1435,39 +1435,46 @@ function scrollRangeIntoView(range) {
     start?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-// Walk up the ancestor chain to find the first element that actually scrolls.
-// Gemini's chat content lives inside infinite-scroller which exposes a
-// vertically-scrollable overflow — we want scrollTop manipulation on THAT
-// node, not on document.documentElement (which is overflow: hidden here).
-function findScrollContainer(el) {
-    let cur = el;
-    while (cur && cur !== document.body) {
-        const style = getComputedStyle(cur);
-        const oy = style.overflowY;
-        if ((oy === 'auto' || oy === 'scroll') && cur.scrollHeight > cur.clientHeight) {
-            return cur;
-        }
-        cur = cur.parentElement;
-    }
-    return document.scrollingElement || document.documentElement;
-}
-
+// Gemini's scroll container is a custom <infinite-scroller> web component
+// with virtualized rendering. Its internal scroll position doesn't respond
+// reliably to scrollTop writes from outside, so we sidestep container
+// detection altogether: insert a zero-size marker at the range's start,
+// let scrollIntoView walk whatever ancestor chain it needs, then remove.
+// The browser natively handles any scroll container on the way up.
 function scrollRangeIntoViewPrecise(range) {
-    const start = range.startContainer.nodeType === 1
-        ? range.startContainer
-        : range.startContainer.parentElement;
-    if (!start) return;
-    const container = findScrollContainer(start);
-    const rangeRect = range.getBoundingClientRect();
-    const containerRect = container === document.documentElement
-        ? { top: 0, height: window.innerHeight }
-        : container.getBoundingClientRect();
-    // Desired final position: range's top sits at 1/4 from container top so
-    // we see both the selection start and a bit of context below. Using the
-    // actual rect (not the parent element) means the scroll is precise even
-    // when the selection begins near the bottom of a long block.
-    const delta = rangeRect.top - containerRect.top - containerRect.height * 0.25;
-    container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' });
+    const marker = document.createElement('span');
+    marker.setAttribute('data-aitb-scroll-marker', '');
+    // Zero-size inline-block keeps the layout untouched. line-height 0 is
+    // defensive against line-height leaking from the parent and shifting
+    // the surrounding text while the marker is inserted.
+    marker.style.cssText = 'display:inline-block;width:0;height:0;line-height:0;font-size:0;padding:0;margin:0;';
+
+    const clone = range.cloneRange();
+    clone.collapse(true);
+    try {
+        clone.insertNode(marker);
+    } catch {
+        // Some nodes (replaced elements, certain <pre> variants) can reject
+        // insertion — fall back to the simple parent scroll used elsewhere.
+        const start = range.startContainer.nodeType === 1
+            ? range.startContainer
+            : range.startContainer.parentElement;
+        start?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+    }
+
+    marker.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    // Give the smooth scroll time to start before tearing down the marker.
+    // Also re-normalize the parent so text nodes the insertion split get
+    // merged back — keeps the range pointing at contiguous text for the
+    // subsequent flashHighlightRange call on legacy browsers.
+    setTimeout(() => {
+        const parent = marker.parentNode;
+        if (!parent) return;
+        parent.removeChild(marker);
+        parent.normalize();
+    }, 400);
 }
 
 // Full-message flash — used when no selection was captured or re-location
