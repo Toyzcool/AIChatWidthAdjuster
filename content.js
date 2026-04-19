@@ -1364,6 +1364,12 @@ function findMessageFromBookmark(bm) {
 // highlight the matching range for ~2s.
 function scrollToBookmark(bm) {
     const msgEl = findMessageFromBookmark(bm);
+    if (site?.storageKey === 'geminiWidth') {
+        console.log('[AIToolbox/Gemini] scrollToBookmark enter', {
+            hasMsgEl: !!msgEl,
+            hasSelectionText: !!bm.selection?.text,
+        });
+    }
     if (!msgEl) {
         // Message currently unmounted (virtualization) or removed. Best
         // effort: do nothing. A future stage could trigger site-specific
@@ -1394,6 +1400,11 @@ function scrollToBookmark(bm) {
     }
     const idx = joined.toLowerCase().indexOf(wanted);
     if (idx === -1) {
+        if (site?.storageKey === 'geminiWidth') {
+            console.log('[AIToolbox/Gemini] wanted text NOT found in message DOM', {
+                wantedLen: wanted.length, joinedLen: joined.length,
+            });
+        }
         msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         flashHighlight(msgEl);
         return;
@@ -1494,7 +1505,7 @@ function scrollRangeIntoViewPrecise(range) {
     });
     attempts.push(`window.scrollTo +${rangeRect.top - vhTarget}`);
 
-    console.debug('[AIToolbox/Gemini scroll]', {
+    console.log('[AIToolbox/Gemini scroll]', {
         rangeRect: { top: rangeRect.top, left: rangeRect.left, h: rangeRect.height },
         attempts,
     });
