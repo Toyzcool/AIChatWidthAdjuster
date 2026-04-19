@@ -1435,46 +1435,78 @@ function scrollRangeIntoView(range) {
     start?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-// Gemini's scroll container is a custom <infinite-scroller> web component
-// with virtualized rendering. Its internal scroll position doesn't respond
-// reliably to scrollTop writes from outside, so we sidestep container
-// detection altogether: insert a zero-size marker at the range's start,
-// let scrollIntoView walk whatever ancestor chain it needs, then remove.
-// The browser natively handles any scroll container on the way up.
+// Gemini scroll is unusually resistant to the standard approaches — its
+// custom <infinite-scroller> virtualizes children and neither scrollTop
+// writes on apparent containers nor scrollIntoView on a child have worked
+// reliably. Belt-and-suspenders: read the range's viewport rect BEFORE any
+// DOM mutation, then apply every plausible scroll operation. Only the
+// correct one takes effect; the others are silently ignored. Diagnostics
+// in console help future tuning if this also fails.
 function scrollRangeIntoViewPrecise(range) {
-    const marker = document.createElement('span');
-    marker.setAttribute('data-aitb-scroll-marker', '');
-    // Zero-size inline-block keeps the layout untouched. line-height 0 is
-    // defensive against line-height leaking from the parent and shifting
-    // the surrounding text while the marker is inserted.
-    marker.style.cssText = 'display:inline-block;width:0;height:0;line-height:0;font-size:0;padding:0;margin:0;';
+    const rangeRect = range.getBoundingClientRect();
+    const vhTarget = window.innerHeight * 0.3; // desired viewport-y for range.top
 
+    const attempts = [];
+
+    // 1. scrollIntoView on a temporary marker at the range start. Covers
+    //    native scrollable ancestors.
+    const marker = document.createElement('span');
+    marker.style.cssText = 'display:inline-block;width:0;height:0;line-height:0;font-size:0;';
     const clone = range.cloneRange();
     clone.collapse(true);
+    let markerInserted = false;
     try {
         clone.insertNode(marker);
-    } catch {
-        // Some nodes (replaced elements, certain <pre> variants) can reject
-        // insertion — fall back to the simple parent scroll used elsewhere.
-        const start = range.startContainer.nodeType === 1
-            ? range.startContainer
-            : range.startContainer.parentElement;
-        start?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return;
+        markerInserted = true;
+        marker.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        attempts.push('marker.scrollIntoView');
+    } catch (e) {
+        attempts.push(`marker.insert failed: ${e.message}`);
     }
 
-    marker.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // 2. Direct scrollTop adjustment on each plausible Gemini scroll
+    //    container. infinite-scroller is a web component but it often
+    //    exposes scrollTop on its host or an inner viewport div.
+    const candidates = [
+        document.querySelector('.chat-history-scroll-container'),
+        document.querySelector('infinite-scroller'),
+        document.querySelector('#chat-history'),
+        document.scrollingElement,
+    ].filter(Boolean);
+    for (const el of candidates) {
+        if (!(el.scrollHeight > el.clientHeight)) continue;
+        const cRect = el === document.scrollingElement || el === document.documentElement
+            ? { top: 0 } : el.getBoundingClientRect();
+        const delta = rangeRect.top - cRect.top - vhTarget;
+        const before = el.scrollTop;
+        try {
+            el.scrollTo({ top: before + delta, behavior: 'smooth' });
+        } catch {
+            el.scrollTop = before + delta;
+        }
+        attempts.push(`${el.tagName || 'scrollingEl'} scrollTop ${before} -> ${el.scrollTop}`);
+    }
 
-    // Give the smooth scroll time to start before tearing down the marker.
-    // Also re-normalize the parent so text nodes the insertion split get
-    // merged back — keeps the range pointing at contiguous text for the
-    // subsequent flashHighlightRange call on legacy browsers.
-    setTimeout(() => {
-        const parent = marker.parentNode;
-        if (!parent) return;
-        parent.removeChild(marker);
-        parent.normalize();
-    }, 400);
+    // 3. Window-level scroll as a last resort.
+    window.scrollTo({
+        top: window.scrollY + rangeRect.top - vhTarget,
+        behavior: 'smooth',
+    });
+    attempts.push(`window.scrollTo +${rangeRect.top - vhTarget}`);
+
+    console.debug('[AIToolbox/Gemini scroll]', {
+        rangeRect: { top: rangeRect.top, left: rangeRect.left, h: rangeRect.height },
+        attempts,
+    });
+
+    if (markerInserted) {
+        setTimeout(() => {
+            const parent = marker.parentNode;
+            if (!parent) return;
+            parent.removeChild(marker);
+            parent.normalize();
+        }, 400);
+    }
 }
 
 // Full-message flash — used when no selection was captured or re-location
