@@ -1380,8 +1380,6 @@ function scrollToBookmark(bm) {
         flashHighlight(msgEl);
         return;
     }
-    msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
     // Build the concatenated innerText and a mapping back to the underlying
     // text nodes so we can construct a Range once we find the substring.
     const walker = document.createTreeWalker(msgEl, NodeFilter.SHOW_TEXT);
@@ -1396,6 +1394,7 @@ function scrollToBookmark(bm) {
     }
     const idx = joined.toLowerCase().indexOf(wanted);
     if (idx === -1) {
+        msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         flashHighlight(msgEl);
         return;
     }
@@ -1404,13 +1403,36 @@ function scrollToBookmark(bm) {
     const startSeg = segments.find(s => idx >= s.start && idx < s.end);
     const endSeg = segments.find(s => (idx + wanted.length) > s.start && (idx + wanted.length) <= s.end);
     if (!startSeg || !endSeg) {
+        msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         flashHighlight(msgEl);
         return;
     }
     range.setStart(startSeg.node, idx - startSeg.start);
     range.setEnd(endSeg.node, (idx + wanted.length) - endSeg.start);
 
+    scrollRangeIntoView(range);
     flashHighlightRange(range);
+}
+
+// Scroll the viewport so the range is vertically centered, using the range's
+// own bounding rect. Doing the scroll based on the range (not the message
+// container) is what makes jumps precise even when the selection starts with
+// a heading or crosses block boundaries — those cases used to land at the
+// message's center, which is often far from the actual selection.
+function scrollRangeIntoView(range) {
+    const rect = range.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+        // Zero-size rects happen when the range starts at a node boundary
+        // with no laid-out content — fall back to scrolling the start node.
+        const start = range.startContainer.nodeType === 1
+            ? range.startContainer
+            : range.startContainer.parentElement;
+        start?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+    }
+    const absoluteTop = rect.top + window.scrollY;
+    const target = absoluteTop - (window.innerHeight / 2) + (rect.height / 2);
+    window.scrollTo({ top: target, behavior: 'smooth' });
 }
 
 // Full-message flash — used when no selection was captured or re-location
@@ -1420,24 +1442,42 @@ function flashHighlight(el) {
     setTimeout(() => el.classList.remove('aitb-bm-flash'), 1800);
 }
 
-// Range flash — wrap the matched range with a <mark> that has our highlight
-// styling, then unwrap after the animation. We keep the wrap tiny and remove
-// it cleanly to avoid polluting the host DOM with residual nodes.
+// Range flash — prefers the CSS Custom Highlight API (registered range,
+// styled via ::highlight()) so we can highlight across element boundaries
+// (e.g. selection that starts in a <h2> and continues into a <p>) without
+// mutating the host DOM. Falls back to wrapping a <mark> for browsers that
+// don't expose CSS.highlights, and finally to flashing the nearest block.
+const HIGHLIGHT_NAME = 'aitb-bm-highlight';
+let highlightCleanup = null;
+
 function flashHighlightRange(range) {
+    // Clear any in-flight highlight so rapid clicks don't leak timers.
+    if (highlightCleanup) { highlightCleanup(); highlightCleanup = null; }
+
+    if (window.CSS && CSS.highlights && typeof Highlight === 'function') {
+        const hl = new Highlight(range);
+        CSS.highlights.set(HIGHLIGHT_NAME, hl);
+        const timer = setTimeout(() => {
+            CSS.highlights.delete(HIGHLIGHT_NAME);
+            highlightCleanup = null;
+        }, 1800);
+        highlightCleanup = () => { clearTimeout(timer); CSS.highlights.delete(HIGHLIGHT_NAME); };
+        return;
+    }
+
+    // Legacy path for browsers without CSS.highlights — try surroundContents,
+    // flash the common ancestor if the range spans element boundaries.
     const mark = document.createElement('mark');
     mark.className = 'aitb-bm-mark';
     try {
         range.surroundContents(mark);
     } catch {
-        // Range spans element boundaries — fall back to flashing the closest
-        // block container so we still give visual feedback.
         const fallback = range.commonAncestorContainer.nodeType === 1
             ? range.commonAncestorContainer
             : range.commonAncestorContainer.parentElement;
         if (fallback) flashHighlight(fallback);
         return;
     }
-    mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setTimeout(() => {
         const parent = mark.parentNode;
         if (!parent) return;
@@ -1737,6 +1777,13 @@ const BOOKMARKS_CSS = `
         0%   { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
         15%  { box-shadow: 0 0 0 6px rgba(0, 122, 255, 0.35); }
         100% { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+    }
+    /* CSS Custom Highlight — used when available (Chrome 105+). Works across
+       element boundaries, so selections spanning headings + paragraphs stay
+       highlighted precisely where the user picked. */
+    ::highlight(aitb-bm-highlight) {
+        background-color: rgba(255, 214, 10, 0.55);
+        color: inherit;
     }
     mark.aitb-bm-mark {
         background: linear-gradient(180deg, rgba(255, 214, 10, 0.7), rgba(255, 159, 10, 0.6));
