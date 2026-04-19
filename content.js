@@ -1398,7 +1398,29 @@ function scrollToBookmark(bm) {
         segments.push({ node, start: joined.length, end: joined.length + text.length });
         joined += text;
     }
-    const idx = joined.toLowerCase().indexOf(wanted);
+    // Fast path: exact substring match against concatenated text nodes.
+    // Works when the bookmark's stored text (whitespace already collapsed to
+    // single spaces at save time) happens to appear verbatim in the DOM —
+    // which is the usual case on ChatGPT and Claude.
+    let idx = joined.toLowerCase().indexOf(wanted);
+    let matchedLength = wanted.length;
+
+    if (idx === -1) {
+        // Whitespace-flexible fallback. Gemini renders cross-block selections
+        // with \n\t between paragraph/heading text nodes; those runs aren't
+        // present in the bookmark's normalized text, so the exact match above
+        // misses. Build a regex where each run of whitespace in `wanted`
+        // matches any run of whitespace in the DOM, then search.
+        const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const loose = escaped.replace(/\s+/g, '\\s+');
+        const re = new RegExp(loose, 'i');
+        const match = joined.match(re);
+        if (match) {
+            idx = match.index;
+            matchedLength = match[0].length;
+        }
+    }
+
     if (idx === -1) {
         if (site?.storageKey === 'geminiWidth') {
             console.log('[AIToolbox/Gemini] wanted text NOT found in message DOM', {
@@ -1412,14 +1434,14 @@ function scrollToBookmark(bm) {
 
     const range = document.createRange();
     const startSeg = segments.find(s => idx >= s.start && idx < s.end);
-    const endSeg = segments.find(s => (idx + wanted.length) > s.start && (idx + wanted.length) <= s.end);
+    const endSeg = segments.find(s => (idx + matchedLength) > s.start && (idx + matchedLength) <= s.end);
     if (!startSeg || !endSeg) {
         msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         flashHighlight(msgEl);
         return;
     }
     range.setStart(startSeg.node, idx - startSeg.start);
-    range.setEnd(endSeg.node, (idx + wanted.length) - endSeg.start);
+    range.setEnd(endSeg.node, (idx + matchedLength) - endSeg.start);
 
     scrollRangeIntoView(range);
     flashHighlightRange(range);
