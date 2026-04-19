@@ -1026,6 +1026,45 @@ const BOOKMARK_SITES = {
             return atIndex ?? null;
         },
     },
+
+    geminiWidth: {
+        // Gemini app URLs: /app for a new chat, /app/{id} for a saved one.
+        // The id isn't a UUID — Gemini uses a shorter alphanumeric token, so
+        // we match any non-slash segment.
+        getConversationId: () => {
+            const m = location.pathname.match(/\/app\/([^/?#]+)/i);
+            return m ? m[1] : null;
+        },
+        // Gemini uses web components: <user-query> for prompts, <model-response>
+        // for answers. Iterating both in document order preserves turn flow.
+        messageSelector: 'user-query, model-response',
+        findMessageElement: (target) =>
+            target.closest?.('user-query, model-response') ?? null,
+        // No stable id here either — same index + hash strategy as Claude.
+        getMessageKey: (el) => {
+            const all = Array.from(document.querySelectorAll('user-query, model-response'));
+            const index = all.indexOf(el);
+            const role = el.tagName.toLowerCase() === 'user-query' ? 'user' : 'assistant';
+            const text = (el.innerText || el.textContent || '').trim();
+            return { messageIndex: index, textHash: hashText(text), role };
+        },
+        findMessageByKey: (key) => {
+            if (!key) return null;
+            const all = Array.from(document.querySelectorAll('user-query, model-response'));
+            const atIndex = all[key.messageIndex];
+            if (atIndex) {
+                const text = (atIndex.innerText || atIndex.textContent || '').trim();
+                if (!key.textHash || hashText(text) === key.textHash) return atIndex;
+            }
+            if (key.textHash) {
+                for (const el of all) {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    if (hashText(text) === key.textHash) return el;
+                }
+            }
+            return atIndex ?? null;
+        },
+    },
 };
 
 // Fast non-cryptographic hash (djb2). Used only to detect "is this the same
