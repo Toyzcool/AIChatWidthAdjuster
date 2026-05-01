@@ -9,13 +9,14 @@ fill the Dashboard.
 
 ## 0. Release Checklist
 
-1. Bump `version` in `manifest.json` and `popup.html` (§1)
-2. Update §2 (Store listing copy) if new features
-3. Update §3 (Permission justifications) if new permissions
-4. Update §6 (Screenshots) if UI changed
-5. Update `PRIVACY.md` at repo root if data handling changed
-6. Run `zip -r AIToolbox-<version>.zip manifest.json content.js popup.html popup.js icon16.png icon32.png icon48.png icon128.png` (§8)
-7. Upload zip → fill listing from this doc → submit for review
+1. **Run `npm test`** — all green is mandatory
+2. Bump `version` in `manifest.json` and `popup.html` (§1)
+3. Update §2 (Store listing copy) if new features
+4. Update §3 (Permission justifications) if new permissions
+5. Update §6 (Screenshots) if UI changed
+6. Update `PRIVACY.md` at repo root if data handling changed
+7. Package the zip per §8
+8. Upload zip → fill listing from this doc → submit for review
 
 ---
 
@@ -455,12 +456,15 @@ format: 24-bit PNG or JPEG, no alpha channel.
 
 ## 8. Packaging
 
-Run from the repo root. Zip contains exactly 8 runtime files — nothing else:
+Run from the repo root. Zip contains exactly 9 runtime files — nothing else.
+The `lib/pure.js` shared helpers must ship alongside `content.js` because
+the manifest's `content_scripts.js` array loads them in order.
 
 ```bash
 rm -f AIToolbox-<version>.zip
 zip -r AIToolbox-<version>.zip \
   manifest.json content.js popup.html popup.js \
+  lib/pure.js \
   icon16.png icon32.png icon48.png icon128.png
 ```
 
@@ -469,9 +473,17 @@ Verify contents:
 unzip -l AIToolbox-<version>.zip
 ```
 
-Expected output: 8 entries, total ~58KB. If anything else appears (`.claude/`,
-`Icon.png`, `scripts/`, `.DS_Store`) re-run the command above with explicit
-file list — **never** `zip -r * `.
+Expected output: 9 entries, total ~60KB. If anything else appears (`.claude/`,
+`Icon.png`, `scripts/`, `.DS_Store`, `tests/`, `package.json`,
+`node_modules/`) re-run the command above with the explicit file list —
+**never** `zip -r * `.
+
+### Pre-package check
+Before zipping, run the test suite:
+```bash
+npm test
+```
+All tests must pass green. Failures are blocking — do not ship.
 
 ---
 
