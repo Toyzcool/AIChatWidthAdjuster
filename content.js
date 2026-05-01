@@ -916,19 +916,10 @@ function detectHostTheme() {
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
-// Parse rgb()/rgba()/hex color strings and return perceived luminance in
-// [0, 1]. Returns null for fully transparent or unrecognized values so the
-// caller can fall through to other heuristics.
-function bgLuminance(str) {
-    if (!str) return null;
-    const m = str.match(/rgba?\(([^)]+)\)/i);
-    if (!m) return null;
-    const parts = m[1].split(',').map(s => parseFloat(s.trim()));
-    const [r, g, b, a = 1] = parts;
-    if (!Number.isFinite(r) || a === 0) return null;
-    // Rec. 601 luma — good enough for a dark/light branch.
-    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-}
+// Pure helpers (hashText, bgLuminance, etc.) come from lib/pure.js, which the
+// manifest loads ahead of this file. Aliasing here keeps the rest of the
+// content script readable and the helpers unit-testable from Node.
+const { bgLuminance, hashText } = (typeof AIToolboxPure !== 'undefined') ? AIToolboxPure : {};
 
 function applyHostTheme() {
     const theme = detectHostTheme();
@@ -1066,17 +1057,6 @@ const BOOKMARK_SITES = {
         },
     },
 };
-
-// Fast non-cryptographic hash (djb2). Used only to detect "is this the same
-// message content" — collisions are harmless because they'd just cause a
-// scroll to the wrong message, and we also carry an index as a primary key.
-function hashText(s) {
-    let h = 5381;
-    for (let i = 0; i < s.length; i++) {
-        h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-    }
-    return String(h);
-}
 
 function currentAdapter() {
     return site ? BOOKMARK_SITES[site.storageKey] ?? null : null;
