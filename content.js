@@ -972,6 +972,44 @@ const BOOKMARK_SITES = {
             if (!key?.messageId) return null;
             return document.querySelector(`[data-message-id="${CSS.escape(key.messageId)}"]`);
         },
+        // ----- History indexing -----
+        // Sidebar list of saved conversations. ChatGPT renders these as
+        // <a href="/c/{id}"> inside the nav drawer; the link's text is the
+        // conversation title. New unsaved chats appear as /c/new and are
+        // skipped.
+        scrapeListItems: () => {
+            const out = [];
+            const links = document.querySelectorAll('nav a[href^="/c/"]');
+            for (const a of links) {
+                const m = a.getAttribute('href').match(/\/c\/([0-9a-f-]+)/i);
+                if (!m) continue;
+                const title = (a.innerText || a.textContent || '').trim();
+                if (!title) continue;
+                out.push({ id: m[1], title });
+            }
+            return out;
+        },
+        scrapeCurrentConversation: () => {
+            const m = location.pathname.match(/\/c\/([0-9a-f-]+)/i);
+            if (!m) return null;
+            const id = m[1];
+            const turns = document.querySelectorAll('[data-message-id]');
+            if (!turns.length) return null;
+            const parts = [];
+            for (const t of turns) {
+                const text = (t.innerText || t.textContent || '').trim();
+                if (text) parts.push(text);
+            }
+            // Title comes from the matching sidebar link when one is mounted.
+            // Falls back to <title> which ChatGPT keeps in sync with the chat.
+            let title = '';
+            const sidebarLink = document.querySelector(
+                `nav a[href="/c/${CSS.escape(id)}"]`
+            );
+            if (sidebarLink) title = (sidebarLink.innerText || '').trim();
+            if (!title) title = (document.title || '').replace(/\s*\|\s*ChatGPT\s*$/i, '').trim();
+            return { id, title, allText: parts.join('\n\n') };
+        },
     },
 
     claudeWidth: {
@@ -1016,6 +1054,39 @@ const BOOKMARK_SITES = {
             }
             return atIndex ?? null;
         },
+        // Claude's sidebar lists recent chats as anchors with /chat/{id}
+        // hrefs. Title is the link's visible text.
+        scrapeListItems: () => {
+            const out = [];
+            const links = document.querySelectorAll('a[href^="/chat/"]');
+            for (const a of links) {
+                const m = a.getAttribute('href').match(/\/chat\/([0-9a-f-]+)/i);
+                if (!m) continue;
+                const title = (a.innerText || a.textContent || '').trim();
+                if (!title) continue;
+                out.push({ id: m[1], title });
+            }
+            return out;
+        },
+        scrapeCurrentConversation: () => {
+            const m = location.pathname.match(/\/chat\/([0-9a-f-]+)/i);
+            if (!m) return null;
+            const id = m[1];
+            const turns = document.querySelectorAll(
+                '[data-testid="user-message"], .font-claude-response'
+            );
+            if (!turns.length) return null;
+            const parts = [];
+            for (const t of turns) {
+                const text = (t.innerText || t.textContent || '').trim();
+                if (text) parts.push(text);
+            }
+            let title = '';
+            const sidebarLink = document.querySelector(`a[href="/chat/${CSS.escape(id)}"]`);
+            if (sidebarLink) title = (sidebarLink.innerText || '').trim();
+            if (!title) title = (document.title || '').replace(/\s*-\s*Claude\s*$/i, '').trim();
+            return { id, title, allText: parts.join('\n\n') };
+        },
     },
 
     geminiWidth: {
@@ -1055,8 +1126,59 @@ const BOOKMARK_SITES = {
             }
             return atIndex ?? null;
         },
+        // Gemini's sidebar must be expanded (or the user has it open) for
+        // the conversation links to be present. We just observe whatever's
+        // currently rendered; the indexer re-runs on URL change so titles
+        // accumulate over time as the user opens the drawer.
+        //
+        // Multi-account: Google routes a Gemini URL to whichever account is
+        // the user's default unless the path includes /u/N/ (N being the
+        // account index). We detect the current account from the URL and
+        // stamp it onto every entry — without this, clicking a search hit
+        // on a non-default account 404s. This is a Gemini-only concern
+        // because ChatGPT and Claude session-segregate by browser profile.
+        scrapeListItems: () => {
+            const accountIndex = currentGeminiAccountIndex();
+            const out = [];
+            const links = document.querySelectorAll('a[href*="/app/"]');
+            for (const a of links) {
+                const m = a.getAttribute('href').match(/\/app\/([^/?#]+)/i);
+                if (!m) continue;
+                const title = (a.innerText || a.textContent || '').trim();
+                if (!title) continue;
+                out.push({ id: m[1], title, accountIndex });
+            }
+            return out;
+        },
+        scrapeCurrentConversation: () => {
+            const m = location.pathname.match(/\/app\/([^/?#]+)/i);
+            if (!m) return null;
+            const id = m[1];
+            const accountIndex = currentGeminiAccountIndex();
+            const turns = document.querySelectorAll('user-query, model-response');
+            if (!turns.length) return null;
+            const parts = [];
+            for (const t of turns) {
+                const text = (t.innerText || t.textContent || '').trim();
+                if (text) parts.push(text);
+            }
+            let title = '';
+            const sidebarLink = document.querySelector(`a[href*="/app/${CSS.escape(id)}"]`);
+            if (sidebarLink) title = (sidebarLink.innerText || '').trim();
+            if (!title) title = (document.title || '').replace(/\s*[-—]\s*Gemini\s*$/i, '').trim();
+            return { id, title, allText: parts.join('\n\n'), accountIndex };
+        },
     },
 };
+
+// Extract Google's per-account routing prefix (the N in /u/N/) from the
+// current URL. Returns null when the URL has no prefix (default account).
+// Used by the Gemini adapter so search results know which account scope
+// to navigate to.
+function currentGeminiAccountIndex() {
+    const m = location.pathname.match(/^\/u\/(\d+)\//);
+    return m ? Number(m[1]) : null;
+}
 
 function currentAdapter() {
     return site ? BOOKMARK_SITES[site.storageKey] ?? null : null;
@@ -1956,4 +2078,103 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', mountBookmarksPanel);
 } else {
     mountBookmarksPanel();
+}
+
+// --- History indexing ----------------------------------------------------
+// Quietly captures conversation titles + full text into chrome.storage.local
+// so the popup search box can find them later. Only runs on supported sites
+// and only when the user actually visits a conversation — no background
+// scraping, no proactive crawl. The pure merge/trim helpers in lib/pure.js
+// keep storage bounded and prevent accidental data loss when a list-only
+// scrape would otherwise clobber a fully-indexed conversation.
+
+const HISTORY_INDEX_PREFIX = 'historyIndex:';
+const HISTORY_INDEX_MAX_ENTRIES = 500;
+// Settling delay before scraping full text — long enough for the initial
+// render and any in-flight streaming response to stabilize.
+const HISTORY_INDEX_SCRAPE_DELAY_MS = 3000;
+
+const HISTORY_SITE_KEYS = {
+    chatgptWidth: 'chatgpt',
+    claudeWidth: 'claude',
+    geminiWidth: 'gemini',
+};
+
+function historyIndexSiteKey() {
+    return site ? HISTORY_SITE_KEYS[site.storageKey] ?? null : null;
+}
+
+function historyStorageKey() {
+    const sk = historyIndexSiteKey();
+    return sk ? `${HISTORY_INDEX_PREFIX}${sk}` : null;
+}
+
+function loadHistoryIndex(cb) {
+    const key = historyStorageKey();
+    if (!key) { cb([]); return; }
+    chrome.storage.local.get(key, (r) => cb(Array.isArray(r[key]) ? r[key] : []));
+}
+
+function writeHistoryIndex(entries) {
+    const key = historyStorageKey();
+    if (!key) return;
+    const trimmed = AIToolboxPure.trimHistoryEntries(entries, HISTORY_INDEX_MAX_ENTRIES);
+    chrome.storage.local.set({ [key]: trimmed });
+}
+
+// Merge incoming list/conversation scrapes against the stored index. Pure
+// helpers do the heavy lifting; this just glues the storage round-trip.
+function indexHistoryUpdate(incoming) {
+    if (!incoming || (Array.isArray(incoming) && !incoming.length)) return;
+    const batch = Array.isArray(incoming) ? incoming : [incoming];
+    const stamped = batch.map(e => ({
+        ...e,
+        updatedAt: e.updatedAt || Date.now(),
+    }));
+    loadHistoryIndex((existing) => {
+        const merged = AIToolboxPure.mergeHistoryEntries(existing, stamped);
+        writeHistoryIndex(merged);
+    });
+}
+
+let historyScrapeTimer = null;
+function scheduleHistoryScrape() {
+    if (!bookmarksSupportedForCurrentSite()) return;
+    const adapter = currentAdapter();
+    if (!adapter) return;
+
+    // Always do a quick list-titles pass — cheap, runs every URL change.
+    try {
+        const list = adapter.scrapeListItems ? adapter.scrapeListItems() : [];
+        if (list.length) indexHistoryUpdate(list);
+    } catch (e) {
+        console.debug('[AIToolbox] list scrape failed', e);
+    }
+
+    // The full scrape is debounced + delayed so we don't capture
+    // half-streamed answers. Each URL change resets the timer.
+    if (historyScrapeTimer) clearTimeout(historyScrapeTimer);
+    historyScrapeTimer = setTimeout(() => {
+        historyScrapeTimer = null;
+        try {
+            const conv = adapter.scrapeCurrentConversation
+                ? adapter.scrapeCurrentConversation()
+                : null;
+            if (conv && conv.id) indexHistoryUpdate(conv);
+        } catch (e) {
+            console.debug('[AIToolbox] conversation scrape failed', e);
+        }
+    }, HISTORY_INDEX_SCRAPE_DELAY_MS);
+}
+
+function startHistoryIndexer() {
+    if (!bookmarksSupportedForCurrentSite()) return;
+    scheduleHistoryScrape();
+    onUrlChange(scheduleHistoryScrape);
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startHistoryIndexer);
+} else {
+    startHistoryIndexer();
 }

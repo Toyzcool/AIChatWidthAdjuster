@@ -220,3 +220,162 @@ chrome.storage.local.get(storageKeys, (result) => {
 
 // Clean up storage from the removed Expand Input Box toggle (v2.3).
 chrome.storage.local.remove('expandInput');
+
+// --- History search ------------------------------------------------------
+// Reads conversation indexes captured by the content script (one per site)
+// and runs the pure searchIndex helper from lib/pure.js. Results across
+// the three sites are pooled, ranked, and clicked through to the canonical
+// conversation URL on each platform.
+
+const HISTORY_KEYS = {
+    chatgpt: 'historyIndex:chatgpt',
+    claude: 'historyIndex:claude',
+    gemini: 'historyIndex:gemini',
+};
+
+// Per-site URL builders. The Gemini variant honors Google's /u/N/ multi-
+// account routing prefix when the entry was indexed under a non-default
+// account; otherwise URLs without a prefix open under the user's default
+// account, which 404s if the conversation lives elsewhere.
+const SITE_URL_BUILDERS = {
+    chatgpt: (id) => `https://chatgpt.com/c/${id}`,
+    claude: (id) => `https://claude.ai/chat/${id}`,
+    gemini: (id, opts = {}) => {
+        const prefix = (opts.accountIndex !== null && opts.accountIndex !== undefined)
+            ? `/u/${opts.accountIndex}` : '';
+        return `https://gemini.google.com${prefix}/app/${id}`;
+    },
+};
+
+const SITE_LABELS = {
+    chatgpt: 'ChatGPT',
+    claude: 'Claude',
+    gemini: 'Gemini',
+};
+
+function loadAllHistoryEntries(cb) {
+    const keys = Object.values(HISTORY_KEYS);
+    chrome.storage.local.get(keys, (result) => {
+        const all = [];
+        for (const [siteName, storageKey] of Object.entries(HISTORY_KEYS)) {
+            const list = Array.isArray(result[storageKey]) ? result[storageKey] : [];
+            for (const entry of list) {
+                if (entry && entry.id) {
+                    // Tag the site so the renderer can build the URL and badge.
+                    all.push({ ...entry, _site: siteName });
+                }
+            }
+        }
+        cb(all);
+    });
+}
+
+function escapeHtmlSafe(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+}
+
+// Build the per-result site label, appending an account suffix when an
+// auxiliary multi-account index is present (currently Gemini only).
+function buildSiteBadge(entry) {
+    const base = SITE_LABELS[entry._site] || entry._site;
+    if (entry._site === 'gemini' && entry.accountIndex !== undefined && entry.accountIndex !== null) {
+        return `${base} · #${entry.accountIndex}`;
+    }
+    return base;
+}
+
+function renderSearchResults(results) {
+    const container = document.getElementById('searchResults');
+    if (!container) return;
+    if (!results.length) {
+        container.innerHTML = `<div class="search-empty">No matches in your visited conversations.</div>`;
+        return;
+    }
+    container.innerHTML = results.map(r => `
+        <div class="search-result" data-id="${escapeHtmlSafe(r.id)}" data-site="${escapeHtmlSafe(r._site)}">
+            <div class="search-result-meta">
+                <span class="search-result-site">${escapeHtmlSafe(buildSiteBadge(r))}</span>
+                <span class="search-result-title">${escapeHtmlSafe(r.title || 'Untitled')}</span>
+            </div>
+            ${r.snippet ? `<div class="search-result-snippet">${escapeHtmlSafe(r.snippet)}</div>` : ''}
+        </div>
+    `).join('');
+
+    container.querySelectorAll('.search-result').forEach((el, idx) => {
+        el.addEventListener('click', () => {
+            // Pass the full result object through so site-specific URL
+            // builders (Gemini's /u/N/ prefix) can read auxiliary fields
+            // like accountIndex.
+            openConversation(results[idx]);
+        });
+    });
+}
+
+function openConversation(entry) {
+    if (!entry) return;
+    const siteName = entry._site;
+    const builder = SITE_URL_BUILDERS[siteName];
+    if (!builder || !entry.id) return;
+    const url = builder(entry.id, { accountIndex: entry.accountIndex });
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tab = tabs[0];
+        // If the active tab is already on the same AI site, navigate it
+        // (in-place feels more natural). Otherwise open a fresh tab so we
+        // don't disrupt the user's current page.
+        const onSameSite = tab && tab.url && tab.url.includes(
+            { chatgpt: 'chatgpt.com', claude: 'claude.ai', gemini: 'gemini.google.com' }[siteName]
+        );
+        if (onSameSite) {
+            chrome.tabs.update(tab.id, { url });
+        } else {
+            chrome.tabs.create({ url });
+        }
+        // Close the popup so focus lands on the navigated tab cleanly.
+        window.close();
+    });
+}
+
+const searchInput = document.getElementById('searchInput');
+const searchClear = document.getElementById('searchClear');
+const searchCard = document.getElementById('searchCard');
+
+let searchDebounce = null;
+function runSearch(query) {
+    const trimmed = (query || '').trim();
+    if (!trimmed) {
+        searchCard.setAttribute('data-has-query', 'false');
+        return;
+    }
+    searchCard.setAttribute('data-has-query', 'true');
+    if (typeof AIToolboxPure === 'undefined' || !AIToolboxPure.searchIndex) {
+        // Defensive: lib/pure.js failed to load. Don't crash the popup —
+        // just show a neutral empty state.
+        renderSearchResults([]);
+        return;
+    }
+    loadAllHistoryEntries((entries) => {
+        const results = AIToolboxPure.searchIndex(entries, trimmed, { limit: 10 });
+        renderSearchResults(results);
+    });
+}
+
+if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+        if (searchDebounce) clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(() => runSearch(e.target.value), 80);
+    });
+    searchClear.addEventListener('click', () => {
+        searchInput.value = '';
+        runSearch('');
+        searchInput.focus();
+    });
+    // Pressing Esc clears + drops focus.
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            searchInput.value = '';
+            runSearch('');
+        }
+    });
+}
