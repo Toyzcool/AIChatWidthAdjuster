@@ -1130,7 +1130,15 @@ const BOOKMARK_SITES = {
         // the conversation links to be present. We just observe whatever's
         // currently rendered; the indexer re-runs on URL change so titles
         // accumulate over time as the user opens the drawer.
+        //
+        // Multi-account: Google routes a Gemini URL to whichever account is
+        // the user's default unless the path includes /u/N/ (N being the
+        // account index). We detect the current account from the URL and
+        // stamp it onto every entry — without this, clicking a search hit
+        // on a non-default account 404s. This is a Gemini-only concern
+        // because ChatGPT and Claude session-segregate by browser profile.
         scrapeListItems: () => {
+            const accountIndex = currentGeminiAccountIndex();
             const out = [];
             const links = document.querySelectorAll('a[href*="/app/"]');
             for (const a of links) {
@@ -1138,7 +1146,7 @@ const BOOKMARK_SITES = {
                 if (!m) continue;
                 const title = (a.innerText || a.textContent || '').trim();
                 if (!title) continue;
-                out.push({ id: m[1], title });
+                out.push({ id: m[1], title, accountIndex });
             }
             return out;
         },
@@ -1146,6 +1154,7 @@ const BOOKMARK_SITES = {
             const m = location.pathname.match(/\/app\/([^/?#]+)/i);
             if (!m) return null;
             const id = m[1];
+            const accountIndex = currentGeminiAccountIndex();
             const turns = document.querySelectorAll('user-query, model-response');
             if (!turns.length) return null;
             const parts = [];
@@ -1157,10 +1166,19 @@ const BOOKMARK_SITES = {
             const sidebarLink = document.querySelector(`a[href*="/app/${CSS.escape(id)}"]`);
             if (sidebarLink) title = (sidebarLink.innerText || '').trim();
             if (!title) title = (document.title || '').replace(/\s*[-—]\s*Gemini\s*$/i, '').trim();
-            return { id, title, allText: parts.join('\n\n') };
+            return { id, title, allText: parts.join('\n\n'), accountIndex };
         },
     },
 };
+
+// Extract Google's per-account routing prefix (the N in /u/N/) from the
+// current URL. Returns null when the URL has no prefix (default account).
+// Used by the Gemini adapter so search results know which account scope
+// to navigate to.
+function currentGeminiAccountIndex() {
+    const m = location.pathname.match(/^\/u\/(\d+)\//);
+    return m ? Number(m[1]) : null;
+}
 
 function currentAdapter() {
     return site ? BOOKMARK_SITES[site.storageKey] ?? null : null;

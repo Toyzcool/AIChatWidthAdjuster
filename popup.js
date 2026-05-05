@@ -233,10 +233,18 @@ const HISTORY_KEYS = {
     gemini: 'historyIndex:gemini',
 };
 
+// Per-site URL builders. The Gemini variant honors Google's /u/N/ multi-
+// account routing prefix when the entry was indexed under a non-default
+// account; otherwise URLs without a prefix open under the user's default
+// account, which 404s if the conversation lives elsewhere.
 const SITE_URL_BUILDERS = {
     chatgpt: (id) => `https://chatgpt.com/c/${id}`,
     claude: (id) => `https://claude.ai/chat/${id}`,
-    gemini: (id) => `https://gemini.google.com/app/${id}`,
+    gemini: (id, opts = {}) => {
+        const prefix = (opts.accountIndex !== null && opts.accountIndex !== undefined)
+            ? `/u/${opts.accountIndex}` : '';
+        return `https://gemini.google.com${prefix}/app/${id}`;
+    },
 };
 
 const SITE_LABELS = {
@@ -285,19 +293,22 @@ function renderSearchResults(results) {
         </div>
     `).join('');
 
-    container.querySelectorAll('.search-result').forEach((el) => {
+    container.querySelectorAll('.search-result').forEach((el, idx) => {
         el.addEventListener('click', () => {
-            const id = el.getAttribute('data-id');
-            const siteName = el.getAttribute('data-site');
-            openConversation(siteName, id);
+            // Pass the full result object through so site-specific URL
+            // builders (Gemini's /u/N/ prefix) can read auxiliary fields
+            // like accountIndex.
+            openConversation(results[idx]);
         });
     });
 }
 
-function openConversation(siteName, id) {
+function openConversation(entry) {
+    if (!entry) return;
+    const siteName = entry._site;
     const builder = SITE_URL_BUILDERS[siteName];
-    if (!builder || !id) return;
-    const url = builder(id);
+    if (!builder || !entry.id) return;
+    const url = builder(entry.id, { accountIndex: entry.accountIndex });
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const tab = tabs[0];
         // If the active tab is already on the same AI site, navigate it

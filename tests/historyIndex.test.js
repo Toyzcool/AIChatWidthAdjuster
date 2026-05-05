@@ -64,6 +64,28 @@ test('mergeHistoryEntries: undefined inputs are safe', () => {
     assert.deepEqual(mergeHistoryEntries(null, null), []);
 });
 
+test('mergeHistoryEntries: preserves auxiliary fields (Gemini accountIndex)', () => {
+    // First scrape captures account context; later list-only refreshes
+    // shouldn't drop it.
+    const existing = [{
+        id: 'a', title: 'old', allText: 'body',
+        accountIndex: 1, updatedAt: 100,
+    }];
+    const incoming = [{ id: 'a', title: 'new', updatedAt: 200 }];
+    const merged = mergeHistoryEntries(existing, incoming);
+    assert.equal(merged[0].accountIndex, 1);
+    assert.equal(merged[0].title, 'new');
+});
+
+test('mergeHistoryEntries: incoming accountIndex overrides existing', () => {
+    // Edge case: same conversation revisited from a different account
+    // (rare but possible). Newer wins.
+    const existing = [{ id: 'a', title: 'x', accountIndex: 0, updatedAt: 100 }];
+    const incoming = [{ id: 'a', title: 'x', accountIndex: 2, updatedAt: 200 }];
+    const merged = mergeHistoryEntries(existing, incoming);
+    assert.equal(merged[0].accountIndex, 2);
+});
+
 test('mergeHistoryEntries: skips items without id', () => {
     const merged = mergeHistoryEntries(
         [{ title: 'no id' }],
