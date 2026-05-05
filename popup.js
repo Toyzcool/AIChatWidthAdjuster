@@ -276,6 +276,16 @@ function escapeHtmlSafe(s) {
     }[c]));
 }
 
+// Build the per-result site label, appending an account suffix when an
+// auxiliary multi-account index is present (currently Gemini only).
+function buildSiteBadge(entry) {
+    const base = SITE_LABELS[entry._site] || entry._site;
+    if (entry._site === 'gemini' && entry.accountIndex !== undefined && entry.accountIndex !== null) {
+        return `${base} · #${entry.accountIndex}`;
+    }
+    return base;
+}
+
 function renderSearchResults(results) {
     const container = document.getElementById('searchResults');
     if (!container) return;
@@ -286,7 +296,7 @@ function renderSearchResults(results) {
     container.innerHTML = results.map(r => `
         <div class="search-result" data-id="${escapeHtmlSafe(r.id)}" data-site="${escapeHtmlSafe(r._site)}">
             <div class="search-result-meta">
-                <span class="search-result-site">${escapeHtmlSafe(SITE_LABELS[r._site] || r._site)}</span>
+                <span class="search-result-site">${escapeHtmlSafe(buildSiteBadge(r))}</span>
                 <span class="search-result-title">${escapeHtmlSafe(r.title || 'Untitled')}</span>
             </div>
             ${r.snippet ? `<div class="search-result-snippet">${escapeHtmlSafe(r.snippet)}</div>` : ''}
